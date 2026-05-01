@@ -13,7 +13,7 @@ export const useSocket = (onMessage) => {
     if (!business?._id) return;
 
     if (!socketInstance) {
-      socketInstance = io(window.location.origin, { withCredentials: true });
+      socketInstance = io(import.meta.env.VITE_API_URL?.replace('/api', '') || window.location.origin, { withCredentials: true });
     }
 
     socketInstance.emit('join_business', business._id);
