@@ -1,10 +1,20 @@
-import { Link, useLocation } from 'react-router-dom';
-import { useEffect, useState } from 'react';
-  LayoutDashboard, MessageSquare, Package, Calendar,
-  CreditCard, Settings, LogOut, Zap, BarChart2, Star, AlertTriangle, Shield
-} from 'lucide-react';
-import { useAuth } from '../context/AuthContext';
-import api from '../utils/api';
+import {
+  LayoutDashboard,
+  MessageSquare,
+  Package,
+  Calendar,
+  CreditCard,
+  Settings,
+  LogOut,
+  Zap,
+  BarChart2,
+  Star,
+  AlertTriangle,
+  Shield
+} from "lucide-react";
+
+import { useAuth } from "../context/AuthContext";
+import api from "../utils/api";
 
 const navItems = [
   { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
