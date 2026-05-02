@@ -4,6 +4,7 @@ import {
   Shield, LogOut, Zap, AlertTriangle, Settings
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import logo from '../assets/logo.svg';
 
 const navItems = [
   { to: '/admin',          icon: LayoutDashboard, label: 'Overview' },

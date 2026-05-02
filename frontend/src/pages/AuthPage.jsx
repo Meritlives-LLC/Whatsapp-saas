@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { Zap, Eye, EyeOff } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import logo from '../assets/logo.svg';
 
 export default function AuthPage() {
   const [mode, setMode] = useState('login'); // 'login' | 'register'
