@@ -4,6 +4,10 @@ import { Check, Zap, TrendingUp, Crown, ArrowRight, AlertTriangle, XCircle, Refr
 import api from '../utils/api';
 import logo from '../assets/logo.svg';
 
+const LogoIcon = ({ size = 16 }) => (
+  <img src={logo} alt="logo" style={{ width: size, height: size }} className="object-contain" />
+);
+
 const PLAN_ICONS = { free: LogoIcon, starter: TrendingUp, growth: TrendingUp, pro: Crown };
 const PLAN_COLORS = {
   free:    { bg: 'bg-gray-50',    text: 'text-gray-700',   btn: 'bg-gray-800 hover:bg-gray-900',   badge: '' },

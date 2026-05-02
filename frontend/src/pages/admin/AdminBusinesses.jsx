@@ -4,6 +4,10 @@ import { formatDistanceToNow } from 'date-fns';
 import api from '../../utils/api';
 import logo from "../../assets/logo.svg";
 
+const LogoIcon = ({ size = 16 }) => (
+  <img src={logo} alt="logo" style={{ width: size, height: size }} className="object-contain" />
+);
+
 const PLAN_BADGE = {
   free:    'bg-gray-800 text-gray-400',
   starter: 'bg-blue-900 text-blue-300',
