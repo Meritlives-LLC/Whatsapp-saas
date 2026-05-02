@@ -213,12 +213,14 @@ exports.paystackWebhook = async (req, res) => {
         break;
       }
       case 'invoice.payment_failed': {
-        const email = data.customer?.email;
         // Mark as past_due — they can't use AI until they pay
-        await Subscription.findOneAndUpdate(
-          { paystackCustomerCode: data.customer?.customer_code },
-          { status: 'past_due' }
-        );
+        const customerCode = data.customer?.customer_code;
+        if (customerCode) {
+          await Subscription.findOneAndUpdate(
+            { paystackCustomerCode: customerCode },
+            { status: 'past_due' }
+          );
+        }
         break;
       }
     }

@@ -5,13 +5,26 @@ import { Calendar, Clock, CheckCircle, XCircle, AlertCircle,
 import { format, formatDistanceToNow } from 'date-fns';
 import api from '../utils/api';
 
+const safeDate = (val) => {
+  if (!val) return null;
+  const d = new Date(val);
+  return isNaN(d.getTime()) ? null : d;
+};
+
 // ════════════════════════════════════════════════════════════════════════════════
 // BOOKINGS
 // ════════════════════════════════════════════════════════════════════════════════
 export function Bookings() {
   const [appointments, setAppointments] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
 
-  useEffect(() => { api.get('/appointments').then(({ data }) => setAppointments(data.data)); }, []);
+  useEffect(() => {
+    api.get('/appointments')
+      .then(({ data }) => setAppointments(data.data || []))
+      .catch(() => setError('Failed to load bookings. Please refresh.'))
+      .finally(() => setLoading(false));
+  }, []);
 
   const statusConfig = {
     pending:   { icon: AlertCircle, color: 'text-amber-600 bg-amber-50',  label: 'Pending' },
@@ -21,10 +34,20 @@ export function Bookings() {
   };
 
   const updateStatus = (id, status) => {
-    api.patch(`/appointments/${id}`, { status }).then(() =>
-      setAppointments(prev => prev.map(a => a._id === id ? { ...a, status } : a))
-    );
+    api.patch(`/appointments/${id}`, { status })
+      .then(() => setAppointments(prev => prev.map(a => a._id === id ? { ...a, status } : a)))
+      .catch(() => alert('Failed to update status. Please try again.'));
   };
+
+  if (loading) return (
+    <div className="p-8 flex items-center justify-center">
+      <Loader2 size={24} className="animate-spin text-green-500" />
+    </div>
+  );
+
+  if (error) return (
+    <div className="p-8 text-center text-red-500 text-sm">{error}</div>
+  );
 
   return (
     <div className="p-4 md:p-8">
@@ -47,6 +70,7 @@ export function Bookings() {
             {appointments.map(appt => {
               const sc = statusConfig[appt.status] || statusConfig.pending;
               const Icon = sc.icon;
+              const date = safeDate(appt.scheduledAt);
               return (
                 <tr key={appt._id} className="border-b border-gray-50 hover:bg-gray-50">
                   <td className="px-6 py-4">
@@ -62,8 +86,12 @@ export function Bookings() {
                   </td>
                   <td className="px-6 py-4 text-sm text-gray-700">{appt.service||'—'}</td>
                   <td className="px-6 py-4">
-                    <p className="text-sm text-gray-900">{format(new Date(appt.scheduledAt),'MMM d, yyyy')}</p>
-                    <p className="text-xs text-gray-400">{format(new Date(appt.scheduledAt),'h:mm a')}</p>
+                    {date ? (
+                      <>
+                        <p className="text-sm text-gray-900">{format(date,'MMM d, yyyy')}</p>
+                        <p className="text-xs text-gray-400">{format(date,'h:mm a')}</p>
+                      </>
+                    ) : <p className="text-sm text-gray-400">—</p>}
                   </td>
                   <td className="px-6 py-4">
                     <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium ${sc.color}`}>
@@ -94,6 +122,7 @@ export function Bookings() {
         {appointments.map(appt => {
           const sc = statusConfig[appt.status] || statusConfig.pending;
           const Icon = sc.icon;
+          const date = safeDate(appt.scheduledAt);
           return (
             <div key={appt._id} className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
               <div className="flex items-start justify-between mb-3">
@@ -114,7 +143,7 @@ export function Bookings() {
                 <div>
                   <p className="text-gray-700">{appt.service||'No service'}</p>
                   <p className="text-xs text-gray-400 mt-0.5">
-                    {format(new Date(appt.scheduledAt),'MMM d, yyyy · h:mm a')}
+                    {date ? format(date,'MMM d, yyyy · h:mm a') : '—'}
                   </p>
                 </div>
                 <select value={appt.status} onChange={e=>updateStatus(appt._id,e.target.value)}
@@ -151,10 +180,16 @@ function BankAccountManager({ onSelect }) {
   const [verifying, setVerifying] = useState(false);
   const [saving, setSaving]     = useState(false);
   const [bankSearch, setBankSearch] = useState('');
+  const [saveError, setSaveError] = useState(null);
+  const [deleteError, setDeleteError] = useState(null);
 
   useEffect(() => {
-    api.get('/payments/bank-accounts').then(({data}) => setAccounts(data.data));
-    api.get('/payments/banks').then(({data}) => setBanks(data.data));
+    api.get('/payments/bank-accounts')
+      .then(({data}) => setAccounts(data.data || []))
+      .catch(() => {/* non-critical, show empty state */});
+    api.get('/payments/banks')
+      .then(({data}) => setBanks(data.data || []))
+      .catch(() => {/* non-critical */});
   }, []);
 
   const filteredBanks = banks.filter(b => b.name.toLowerCase().includes(bankSearch.toLowerCase()));
@@ -174,7 +209,7 @@ function BankAccountManager({ onSelect }) {
 
   const saveAccount = async () => {
     if (!resolved?.account_name) return;
-    setSaving(true);
+    setSaving(true); setSaveError(null);
     try {
       await api.post('/payments/bank-accounts', {
         accountName: resolved.account_name,
@@ -184,18 +219,26 @@ function BankAccountManager({ onSelect }) {
         isDefault: accounts.length === 0,
       });
       const { data } = await api.get('/payments/bank-accounts');
-      setAccounts(data.data);
+      setAccounts(data.data || []);
       setShowAdd(false);
       setForm({ accountNumber:'', bankCode:'', bankName:'' });
       setResolved(null);
+      setBankSearch('');
+    } catch {
+      setSaveError('Failed to save account. Please try again.');
     } finally {
       setSaving(false);
     }
   };
 
   const deleteAccount = async (id) => {
-    await api.delete(`/payments/bank-accounts/${id}`);
-    setAccounts(prev => prev.filter(a => a._id !== id));
+    setDeleteError(null);
+    try {
+      await api.delete(`/payments/bank-accounts/${id}`);
+      setAccounts(prev => prev.filter(a => a._id !== id));
+    } catch {
+      setDeleteError('Failed to delete account. Please try again.');
+    }
   };
 
   return (
@@ -210,6 +253,9 @@ function BankAccountManager({ onSelect }) {
           + Add Bank
         </button>
       </div>
+
+      {deleteError && <p className="text-xs text-red-500 mb-3">{deleteError}</p>}
+
       <div className="space-y-2 mb-4">
         {accounts.map(acc => (
           <div key={acc._id} className={`flex items-center justify-between p-3 rounded-xl border ${acc.isDefault ? 'border-green-200 bg-green-50' : 'border-gray-100 bg-gray-50'}`}>
@@ -238,6 +284,7 @@ function BankAccountManager({ onSelect }) {
           <p className="text-sm text-gray-400 text-center py-4">No bank accounts saved yet</p>
         )}
       </div>
+
       {showAdd && (
         <div className="border border-gray-200 rounded-xl p-4 bg-gray-50 space-y-3">
           <p className="text-sm font-semibold text-gray-700">Add New Bank Account</p>
@@ -272,8 +319,9 @@ function BankAccountManager({ onSelect }) {
               {resolved.error ? '❌ Could not verify. Check account number and bank.' : `✅ ${resolved.account_name}`}
             </div>
           )}
+          {saveError && <p className="text-xs text-red-500">{saveError}</p>}
           <div className="flex gap-2 pt-1">
-            <button onClick={()=>{setShowAdd(false);setResolved(null);setBankSearch('');setForm({accountNumber:'',bankCode:'',bankName:''});}}
+            <button onClick={()=>{setShowAdd(false);setResolved(null);setBankSearch('');setSaveError(null);setForm({accountNumber:'',bankCode:'',bankName:''}); }}
               className="flex-1 py-2 border border-gray-200 rounded-lg text-xs text-gray-600 hover:bg-gray-100">Cancel</button>
             <button onClick={saveAccount} disabled={saving || !resolved?.account_name}
               className="flex-1 py-2 bg-green-500 hover:bg-green-600 text-white rounded-lg text-xs font-semibold disabled:opacity-50 transition-colors">
@@ -298,24 +346,42 @@ const METHOD_ICONS = {
 
 export function Payments() {
   const [transactions, setTransactions] = useState([]);
+  const [allTransactions, setAllTransactions] = useState([]);
   const [showForm, setShowForm] = useState(false);
   const [tab, setTab]           = useState('all');
   const [form, setForm]         = useState({ customerEmail: '', amount: '', customerName: '', paymentMethod: 'all' });
   const [result, setResult]     = useState(null);
   const [creating, setCreating] = useState(false);
   const [copied, setCopied]     = useState(false);
+  const [fetchError, setFetchError] = useState(null);
+  const [createError, setCreateError] = useState(null);
+  const [loading, setLoading]   = useState(true);
+
+  // Fetch all transactions once for accurate revenue summary
+  useEffect(() => {
+    api.get('/payments/transactions')
+      .then(({ data }) => setAllTransactions(data.data || []))
+      .catch(() => {});
+  }, []);
 
   useEffect(() => { fetchTx(); }, [tab]);
 
   const fetchTx = async () => {
-    const params = tab !== 'all' ? `?paymentMethod=${tab}` : '';
-    const { data } = await api.get(`/payments/transactions${params}`);
-    setTransactions(data.data);
+    setLoading(true); setFetchError(null);
+    try {
+      const params = tab !== 'all' ? `?paymentMethod=${tab}` : '';
+      const { data } = await api.get(`/payments/transactions${params}`);
+      setTransactions(data.data || []);
+    } catch {
+      setFetchError('Failed to load transactions. Please refresh.');
+    } finally {
+      setLoading(false);
+    }
   };
 
   const createLink = async (e) => {
     e.preventDefault();
-    setCreating(true);
+    setCreating(true); setCreateError(null);
     try {
       const payload = {
         customerEmail: form.customerEmail,
@@ -325,6 +391,8 @@ export function Payments() {
       };
       const { data } = await api.post('/payments/create-link', payload);
       setResult(data.data.paymentLink);
+    } catch (err) {
+      setCreateError(err?.response?.data?.message || 'Failed to generate link. Please try again.');
     } finally {
       setCreating(false);
     }
@@ -343,7 +411,11 @@ export function Payments() {
     abandoned: 'bg-gray-100 text-gray-500',
   }[s] || 'bg-gray-100 text-gray-500');
 
-  const totalRevenue = transactions.filter(t=>t.status==='success').reduce((s,t)=>s+t.amount,0);
+  // Always compute revenue from ALL transactions regardless of active tab
+  const totalRevenue = allTransactions.filter(t=>t.status==='success').reduce((s,t)=>s+t.amount,0);
+  const totalSuccess = allTransactions.filter(t=>t.status==='success').length;
+  const totalPending = allTransactions.filter(t=>t.status==='pending').length;
+  const totalFailed  = allTransactions.filter(t=>t.status==='failed').length;
 
   return (
     <div className="p-4 md:p-8">
@@ -352,7 +424,7 @@ export function Payments() {
           <h1 className="text-xl md:text-2xl font-bold text-gray-900">Payments</h1>
           <p className="text-xs md:text-sm text-gray-500 mt-1">Transactions via card, bank transfer & USSD</p>
         </div>
-        <button onClick={()=>{setShowForm(true);setResult(null);}}
+        <button onClick={()=>{setShowForm(true);setResult(null);setCreateError(null);}}
           className="px-3 md:px-4 py-2 bg-green-500 hover:bg-green-600 text-white rounded-xl text-sm font-semibold transition-colors whitespace-nowrap">
           + <span className="hidden sm:inline">Generate </span>Payment Link
         </button>
@@ -366,7 +438,7 @@ export function Payments() {
           <div className="bg-white rounded-t-2xl sm:rounded-2xl shadow-2xl w-full sm:max-w-md p-6 max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between mb-5">
               <h3 className="font-bold text-gray-900">Generate Payment Link</h3>
-              <button onClick={()=>{setShowForm(false);setResult(null);}} className="text-gray-400 hover:text-gray-600">✕</button>
+              <button onClick={()=>{setShowForm(false);setResult(null);setCreateError(null);}} className="text-gray-400 hover:text-gray-600">✕</button>
             </div>
             {result ? (
               <div>
@@ -425,8 +497,9 @@ export function Payments() {
                     ))}
                   </div>
                 </div>
+                {createError && <p className="text-xs text-red-500 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{createError}</p>}
                 <div className="flex gap-3 pt-1">
-                  <button type="button" onClick={()=>setShowForm(false)}
+                  <button type="button" onClick={()=>{setShowForm(false);setCreateError(null);}}
                     className="flex-1 py-2.5 border border-gray-200 rounded-xl text-sm font-medium text-gray-600 hover:bg-gray-50">Cancel</button>
                   <button type="submit" disabled={creating}
                     className="flex-1 py-2.5 bg-green-500 hover:bg-green-600 text-white rounded-xl text-sm font-semibold disabled:opacity-60 transition-colors">
@@ -439,13 +512,13 @@ export function Payments() {
         </div>
       )}
 
-      {/* Revenue summary — 2 cols on mobile, 4 on desktop */}
+      {/* Revenue summary — always from all transactions */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4 mb-5 md:mb-6">
         {[
           { label:'Total Revenue', value:`₦${totalRevenue.toLocaleString()}`, color:'bg-green-500' },
-          { label:'Transactions', value: transactions.filter(t=>t.status==='success').length, color:'bg-blue-500' },
-          { label:'Pending', value: transactions.filter(t=>t.status==='pending').length, color:'bg-amber-500' },
-          { label:'Failed', value: transactions.filter(t=>t.status==='failed').length, color:'bg-red-500' },
+          { label:'Transactions', value: totalSuccess, color:'bg-blue-500' },
+          { label:'Pending', value: totalPending, color:'bg-amber-500' },
+          { label:'Failed', value: totalFailed, color:'bg-red-500' },
         ].map(({label,value,color}) => (
           <div key={label} className="bg-white rounded-xl p-3 md:p-4 border border-gray-100 shadow-sm">
             <div className={`w-2 h-6 md:h-7 rounded-full ${color} mb-2`}/>
@@ -455,7 +528,7 @@ export function Payments() {
         ))}
       </div>
 
-      {/* Filter tabs — scrollable on mobile */}
+      {/* Filter tabs */}
       <div className="flex gap-2 mb-4 overflow-x-auto pb-1 -mx-4 px-4 md:mx-0 md:px-0 scrollbar-none">
         {[
           {value:'all', label:'All payments'},
@@ -470,79 +543,91 @@ export function Payments() {
         ))}
       </div>
 
-      {/* Transactions — table on desktop, cards on mobile */}
-      <div className="hidden md:block bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
-        <table className="w-full">
-          <thead>
-            <tr className="border-b border-gray-100 bg-gray-50">
-              {['Customer','Amount','Method','Reference','Status','Date'].map(h => (
-                <th key={h} className="text-left px-5 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">{h}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
+      {fetchError && <p className="text-sm text-red-500 text-center py-4">{fetchError}</p>}
+
+      {loading ? (
+        <div className="flex items-center justify-center py-12">
+          <Loader2 size={24} className="animate-spin text-green-500" />
+        </div>
+      ) : (
+        <>
+          {/* Transactions table — desktop */}
+          <div className="hidden md:block bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
+            <table className="w-full">
+              <thead>
+                <tr className="border-b border-gray-100 bg-gray-50">
+                  {['Customer','Amount','Method','Reference','Status','Date'].map(h => (
+                    <th key={h} className="text-left px-5 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {transactions.map(t => {
+                  const method = METHOD_ICONS[t.paymentMethod] || METHOD_ICONS.card;
+                  const MethodIcon = method.icon;
+                  const date = safeDate(t.createdAt);
+                  return (
+                    <tr key={t._id} className="border-b border-gray-50 hover:bg-gray-50 transition-colors">
+                      <td className="px-5 py-3">
+                        <p className="text-sm font-medium text-gray-900">{t.customerName||'—'}</p>
+                        <p className="text-xs text-gray-400">{t.customerEmail}</p>
+                      </td>
+                      <td className="px-5 py-3 text-sm font-bold text-gray-900">₦{(t.amount||0).toLocaleString()}</td>
+                      <td className="px-5 py-3">
+                        <span className={`inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full font-medium ${method.color}`}>
+                          <MethodIcon size={10}/> {method.label}
+                        </span>
+                      </td>
+                      <td className="px-5 py-3 text-xs text-gray-400 font-mono">{t.reference}</td>
+                      <td className="px-5 py-3">
+                        <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${statusBadge(t.status)}`}>{t.status}</span>
+                      </td>
+                      <td className="px-5 py-3 text-xs text-gray-400">{date ? format(date,'MMM d, yyyy') : '—'}</td>
+                    </tr>
+                  );
+                })}
+                {!transactions.length && (
+                  <tr><td colSpan={6} className="text-center py-12 text-gray-400 text-sm">No transactions yet</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Mobile transaction cards */}
+          <div className="md:hidden space-y-3">
             {transactions.map(t => {
               const method = METHOD_ICONS[t.paymentMethod] || METHOD_ICONS.card;
               const MethodIcon = method.icon;
+              const date = safeDate(t.createdAt);
               return (
-                <tr key={t._id} className="border-b border-gray-50 hover:bg-gray-50 transition-colors">
-                  <td className="px-5 py-3">
-                    <p className="text-sm font-medium text-gray-900">{t.customerName||'—'}</p>
-                    <p className="text-xs text-gray-400">{t.customerEmail}</p>
-                  </td>
-                  <td className="px-5 py-3 text-sm font-bold text-gray-900">₦{t.amount.toLocaleString()}</td>
-                  <td className="px-5 py-3">
-                    <span className={`inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full font-medium ${method.color}`}>
+                <div key={t._id} className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
+                  <div className="flex items-start justify-between mb-2">
+                    <div>
+                      <p className="font-semibold text-gray-900">{t.customerName||'—'}</p>
+                      <p className="text-xs text-gray-400">{t.customerEmail}</p>
+                    </div>
+                    <p className="text-base font-bold text-gray-900">₦{(t.amount||0).toLocaleString()}</p>
+                  </div>
+                  <div className="flex items-center justify-between text-xs">
+                    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full font-medium ${method.color}`}>
                       <MethodIcon size={10}/> {method.label}
                     </span>
-                  </td>
-                  <td className="px-5 py-3 text-xs text-gray-400 font-mono">{t.reference}</td>
-                  <td className="px-5 py-3">
-                    <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${statusBadge(t.status)}`}>{t.status}</span>
-                  </td>
-                  <td className="px-5 py-3 text-xs text-gray-400">{format(new Date(t.createdAt),'MMM d, yyyy')}</td>
-                </tr>
+                    <span className={`px-2 py-0.5 rounded-full font-medium ${statusBadge(t.status)}`}>{t.status}</span>
+                    <span className="text-gray-400">{date ? format(date,'MMM d') : '—'}</span>
+                  </div>
+                  <p className="text-xs text-gray-300 font-mono mt-2 truncate">{t.reference}</p>
+                </div>
               );
             })}
             {!transactions.length && (
-              <tr><td colSpan={6} className="text-center py-12 text-gray-400 text-sm">No transactions yet</td></tr>
+              <div className="text-center py-12 text-gray-400 text-sm bg-white rounded-xl border border-gray-100">
+                <CreditCard size={32} className="mx-auto mb-3 opacity-30" />
+                No transactions yet
+              </div>
             )}
-          </tbody>
-        </table>
-      </div>
-
-      {/* Mobile transaction cards */}
-      <div className="md:hidden space-y-3">
-        {transactions.map(t => {
-          const method = METHOD_ICONS[t.paymentMethod] || METHOD_ICONS.card;
-          const MethodIcon = method.icon;
-          return (
-            <div key={t._id} className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
-              <div className="flex items-start justify-between mb-2">
-                <div>
-                  <p className="font-semibold text-gray-900">{t.customerName||'—'}</p>
-                  <p className="text-xs text-gray-400">{t.customerEmail}</p>
-                </div>
-                <p className="text-base font-bold text-gray-900">₦{t.amount.toLocaleString()}</p>
-              </div>
-              <div className="flex items-center justify-between text-xs">
-                <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full font-medium ${method.color}`}>
-                  <MethodIcon size={10}/> {method.label}
-                </span>
-                <span className={`px-2 py-0.5 rounded-full font-medium ${statusBadge(t.status)}`}>{t.status}</span>
-                <span className="text-gray-400">{format(new Date(t.createdAt),'MMM d')}</span>
-              </div>
-              <p className="text-xs text-gray-300 font-mono mt-2 truncate">{t.reference}</p>
-            </div>
-          );
-        })}
-        {!transactions.length && (
-          <div className="text-center py-12 text-gray-400 text-sm bg-white rounded-xl border border-gray-100">
-            <CreditCard size={32} className="mx-auto mb-3 opacity-30" />
-            No transactions yet
           </div>
-        )}
-      </div>
+        </>
+      )}
     </div>
   );
 }

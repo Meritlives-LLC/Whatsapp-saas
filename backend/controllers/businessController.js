@@ -103,18 +103,29 @@ exports.createPaymentLink = async (req, res) => {
 
     // Choose payment method
     let result;
+    let resolvedMethod;
     if (paymentMethod === 'bank_transfer') {
       result = await paystackService.initializeBankTransfer({
         email: customerEmail, amount, reference,
         customerName,
         metadata: { customerName, businessId: req.user.business._id, productId },
       });
+      resolvedMethod = 'bank_transfer';
+    } else if (paymentMethod === 'card') {
+      // Card only — restrict channels to card
+      result = await paystackService.initializePayment({
+        email: customerEmail, amount, reference,
+        metadata: { customerName, businessId: req.user.business._id, productId },
+        channels: ['card'],
+      });
+      resolvedMethod = 'card';
     } else {
       // Default: all channels (card + bank transfer + USSD etc.)
       result = await paystackService.initializeAllChannels({
         email: customerEmail, amount, reference,
         metadata: { customerName, businessId: req.user.business._id, productId },
       });
+      resolvedMethod = 'card'; // default label
     }
 
     await Transaction.create({
@@ -123,7 +134,7 @@ exports.createPaymentLink = async (req, res) => {
       customerEmail, customerName, amount, reference,
       paystackReference: result.reference,
       paymentLink: result.authorization_url,
-      paymentMethod: paymentMethod || 'card',
+      paymentMethod: resolvedMethod,
       product: productId || null,
     });
 
@@ -209,7 +220,10 @@ exports.getBankAccounts = async (req, res) => {
 /** Delete a saved bank account */
 exports.deleteBankAccount = async (req, res) => {
   try {
-    await BankAccount.findOneAndDelete({ _id: req.params.id, business: req.user.business._id });
+    const deleted = await BankAccount.findOneAndDelete({ _id: req.params.id, business: req.user.business._id });
+    if (!deleted) {
+      return res.status(404).json({ success: false, message: 'Bank account not found' });
+    }
     res.json({ success: true, message: 'Bank account removed' });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -232,8 +246,9 @@ exports.paystackWebhook = async (req, res) => {
     const { event, data } = payload;
 
     // Idempotency — don't process same ref twice
-    if (paystackService.isAlreadyProcessed(data.reference)) {
-      logger.info(`Webhook duplicate skipped: ${data.reference}`);
+    const webhookRef = data.reference || data.subscription_code || data.transfer_code || JSON.stringify(data).slice(0, 40);
+    if (paystackService.isAlreadyProcessed(webhookRef)) {
+      logger.info(`Webhook duplicate skipped: ${webhookRef}`);
       return res.status(200).send('OK');
     }
 

@@ -10,14 +10,27 @@ const headers = () => ({
 });
 
 // ─── Idempotency store (prevent duplicate webhook processing) ─────────────
-const processedRefs = new Set();
+// Uses Map with timestamp so we can expire old entries without relying on
+// server uptime (free-tier Render restarts frequently, but that's acceptable —
+// the 401 check on webhook signature is the primary guard anyway)
+const processedRefs = new Map();
+const IDEMPOTENCY_TTL = 24 * 60 * 60 * 1000; // 24h
 const isAlreadyProcessed = (ref) => {
+  if (!ref) return false;
+  const now = Date.now();
+  // Clean expired entries
+  for (const [key, ts] of processedRefs) {
+    if (now - ts > IDEMPOTENCY_TTL) processedRefs.delete(key);
+  }
   if (processedRefs.has(ref)) return true;
-  processedRefs.add(ref);
-  // Auto-clean after 24h to prevent memory growth
-  setTimeout(() => processedRefs.delete(ref), 24 * 60 * 60 * 1000);
+  processedRefs.set(ref, now);
   return false;
 };
+
+// ─── Bank list cache (avoid hammering Paystack on every dropdown open) ──────
+let banksCache = null;
+let banksCacheTime = 0;
+const BANKS_CACHE_TTL = 60 * 60 * 1000; // 1 hour
 
 // ── TRANSACTIONS ─────────────────────────────────────────────────────────────
 
@@ -79,11 +92,17 @@ const generateReference = (prefix = 'WA') =>
 // ── BANK TRANSFER ─────────────────────────────────────────────────────────────
 
 /**
- * Get list of all Nigerian banks from Paystack
+ * Get list of all Nigerian banks from Paystack (cached 1h)
  */
 const getBanks = async () => {
+  const now = Date.now();
+  if (banksCache && (now - banksCacheTime) < BANKS_CACHE_TTL) {
+    return banksCache;
+  }
   const response = await axios.get(`${BASE}/bank?country=nigeria&perPage=100`, { headers: headers() });
-  return response.data.data; // array of { name, slug, code, ... }
+  banksCache = response.data.data;
+  banksCacheTime = now;
+  return banksCache; // array of { name, slug, code, ... }
 };
 
 /**
