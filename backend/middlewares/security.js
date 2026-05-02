@@ -5,15 +5,8 @@ const logger = require('../config/logger');
 
 // ── Helmet (HTTP security headers) ──────────────────────────────────────────
 exports.helmetConfig = helmet({
-  contentSecurityPolicy: {
-    directives: {
-      defaultSrc: ["'self'"],
-      styleSrc: ["'self'", "'unsafe-inline'"],
-      scriptSrc: ["'self'"],
-      imgSrc: ["'self'", 'data:', 'https:'],
-    },
-  },
-  crossOriginEmbedderPolicy: false, // Allow Socket.io
+  contentSecurityPolicy: false, // Handled by frontend/Vercel
+  crossOriginEmbedderPolicy: false,
 });
 
 // ── Mongo sanitize (prevent NoSQL injection) ─────────────────────────────────
@@ -45,7 +38,7 @@ exports.authLimiter = rateLimit({
   max: 10,
   standardHeaders: true,
   legacyHeaders: false,
-  skipSuccessfulRequests: true, // Only count failed attempts
+  skipSuccessfulRequests: true,
   message: { success: false, message: 'Too many login attempts. Please wait 15 minutes.' },
   handler: (req, res, next, options) => {
     logger.warn(`Auth rate limit hit: ${req.ip} — possible brute force`);
@@ -68,7 +61,6 @@ exports.webhookLimiter = rateLimit({
 });
 
 // ── Suspend check ─────────────────────────────────────────────────────────────
-// Runs after protect middleware — blocks suspended accounts from any action
 exports.checkActive = (req, res, next) => {
   if (req.user && !req.user.isActive) {
     return res.status(403).json({
@@ -84,8 +76,6 @@ exports.requestLogger = (req, res, next) => {
   const start = Date.now();
   res.on('finish', () => {
     const duration = Date.now() - start;
-    const level = res.statusCode >= 500 ? 'error' : res.statusCode >= 400 ? 'warn' : 'http';
-    logger[level] || logger.info;
     logger.info(`${req.method} ${req.originalUrl} ${res.statusCode} ${duration}ms — ${req.ip}`);
   });
   next();

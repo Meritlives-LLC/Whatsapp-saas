@@ -36,9 +36,17 @@ const allowedOrigins = [
   'http://localhost:5173',
 ].filter(Boolean);
 
+const isAllowedOrigin = (origin) => {
+  if (!origin) return true;
+  if (allowedOrigins.includes(origin)) return true;
+  // Allow any Vercel preview deployment
+  if (/\.vercel\.app$/.test(origin)) return true;
+  return false;
+};
+
 // ─── Socket.io ──────────────────────────────────────────────
 const io = new Server(server, {
-  cors: { origin: allowedOrigins, credentials: true },
+  cors: { origin: (origin, cb) => cb(null, isAllowedOrigin(origin)), credentials: true },
   pingTimeout: 60000,
 });
 
@@ -64,7 +72,7 @@ app.post('/api/webhook', express.json(), (req, res) => webhookCtrl.receiveMessag
 app.use(helmetConfig);
 app.use(cors({
   origin: (origin, callback) => {
-    if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
+    if (isAllowedOrigin(origin)) return callback(null, true);
     callback(new Error(`CORS: origin ${origin} not allowed`));
   },
   credentials: true,
