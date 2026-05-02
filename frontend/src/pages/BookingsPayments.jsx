@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Calendar, Clock, CheckCircle, XCircle, AlertCircle,
          CreditCard, Building2, Smartphone, Search, Loader2,
-         Copy, ExternalLink, ChevronDown, Trash2, Star } from 'lucide-react';
+         Copy, ExternalLink, Trash2, Star } from 'lucide-react';
 import { format, formatDistanceToNow } from 'date-fns';
 import api from '../utils/api';
 
@@ -27,12 +27,14 @@ export function Bookings() {
   };
 
   return (
-    <div className="p-8">
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold text-gray-900">Bookings</h1>
+    <div className="p-4 md:p-8">
+      <div className="mb-5 md:mb-6">
+        <h1 className="text-xl md:text-2xl font-bold text-gray-900">Bookings</h1>
         <p className="text-sm text-gray-500 mt-1">Manage customer appointments</p>
       </div>
-      <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
+
+      {/* Desktop: table | Mobile: cards */}
+      <div className="hidden md:block bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
         <table className="w-full">
           <thead>
             <tr className="border-b border-gray-100 bg-gray-50">
@@ -86,6 +88,53 @@ export function Bookings() {
           </tbody>
         </table>
       </div>
+
+      {/* Mobile card list */}
+      <div className="md:hidden space-y-3">
+        {appointments.map(appt => {
+          const sc = statusConfig[appt.status] || statusConfig.pending;
+          const Icon = sc.icon;
+          return (
+            <div key={appt._id} className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
+              <div className="flex items-start justify-between mb-3">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 bg-gray-100 rounded-full flex items-center justify-center text-sm font-semibold text-gray-600">
+                    {(appt.customerName||'?')[0].toUpperCase()}
+                  </div>
+                  <div>
+                    <p className="font-semibold text-gray-900">{appt.customerName||'Unknown'}</p>
+                    <p className="text-xs text-gray-400">{appt.customerPhone}</p>
+                  </div>
+                </div>
+                <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium ${sc.color}`}>
+                  <Icon size={11}/> {sc.label}
+                </span>
+              </div>
+              <div className="flex items-center justify-between text-sm">
+                <div>
+                  <p className="text-gray-700">{appt.service||'No service'}</p>
+                  <p className="text-xs text-gray-400 mt-0.5">
+                    {format(new Date(appt.scheduledAt),'MMM d, yyyy · h:mm a')}
+                  </p>
+                </div>
+                <select value={appt.status} onChange={e=>updateStatus(appt._id,e.target.value)}
+                  className="text-xs border border-gray-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-green-400">
+                  <option value="pending">Pending</option>
+                  <option value="confirmed">Confirm</option>
+                  <option value="cancelled">Cancel</option>
+                  <option value="completed">Complete</option>
+                </select>
+              </div>
+            </div>
+          );
+        })}
+        {!appointments.length && (
+          <div className="text-center py-12 text-gray-400 text-sm bg-white rounded-xl border border-gray-100">
+            <Calendar size={32} className="mx-auto mb-3 opacity-30" />
+            No bookings yet
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -98,7 +147,7 @@ function BankAccountManager({ onSelect }) {
   const [banks, setBanks]       = useState([]);
   const [showAdd, setShowAdd]   = useState(false);
   const [form, setForm]         = useState({ accountNumber:'', bankCode:'', bankName:'' });
-  const [resolved, setResolved] = useState(null); // { account_name }
+  const [resolved, setResolved] = useState(null);
   const [verifying, setVerifying] = useState(false);
   const [saving, setSaving]     = useState(false);
   const [bankSearch, setBankSearch] = useState('');
@@ -108,9 +157,7 @@ function BankAccountManager({ onSelect }) {
     api.get('/payments/banks').then(({data}) => setBanks(data.data));
   }, []);
 
-  const filteredBanks = banks.filter(b =>
-    b.name.toLowerCase().includes(bankSearch.toLowerCase())
-  );
+  const filteredBanks = banks.filter(b => b.name.toLowerCase().includes(bankSearch.toLowerCase()));
 
   const verifyAccount = async () => {
     if (!form.accountNumber || !form.bankCode) return;
@@ -152,38 +199,34 @@ function BankAccountManager({ onSelect }) {
   };
 
   return (
-    <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5 mb-6">
+    <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4 md:p-5 mb-5 md:mb-6">
       <div className="flex items-center justify-between mb-4">
         <div>
           <h3 className="font-semibold text-gray-900">Your Payout Accounts</h3>
           <p className="text-xs text-gray-400 mt-0.5">Bank accounts you can generate transfer payment links for</p>
         </div>
         <button onClick={()=>setShowAdd(s=>!s)}
-          className="px-3 py-1.5 bg-green-500 hover:bg-green-600 text-white rounded-lg text-xs font-semibold transition-colors">
+          className="px-3 py-1.5 bg-green-500 hover:bg-green-600 text-white rounded-lg text-xs font-semibold transition-colors whitespace-nowrap">
           + Add Bank
         </button>
       </div>
-
-      {/* Saved accounts */}
       <div className="space-y-2 mb-4">
         {accounts.map(acc => (
           <div key={acc._id} className={`flex items-center justify-between p-3 rounded-xl border ${acc.isDefault ? 'border-green-200 bg-green-50' : 'border-gray-100 bg-gray-50'}`}>
-            <div className="flex items-center gap-3">
-              <div className="w-8 h-8 bg-white border border-gray-200 rounded-lg flex items-center justify-center">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="w-8 h-8 bg-white border border-gray-200 rounded-lg flex items-center justify-center flex-shrink-0">
                 <Building2 size={14} className="text-gray-500" />
               </div>
-              <div>
-                <p className="text-sm font-medium text-gray-900">{acc.accountName}</p>
-                <p className="text-xs text-gray-500">{acc.bankName} • {acc.accountNumber}</p>
+              <div className="min-w-0">
+                <p className="text-sm font-medium text-gray-900 truncate">{acc.accountName}</p>
+                <p className="text-xs text-gray-500 truncate">{acc.bankName} · {acc.accountNumber}</p>
               </div>
-              {acc.isDefault && <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full font-medium flex items-center gap-1"><Star size={9}/>Default</span>}
+              {acc.isDefault && <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full font-medium flex items-center gap-1 flex-shrink-0"><Star size={9}/>Default</span>}
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-shrink-0 ml-2">
               {onSelect && (
                 <button onClick={()=>onSelect(acc)}
-                  className="text-xs px-3 py-1.5 bg-green-500 text-white rounded-lg font-medium hover:bg-green-600 transition-colors">
-                  Use
-                </button>
+                  className="text-xs px-3 py-1.5 bg-green-500 text-white rounded-lg font-medium hover:bg-green-600 transition-colors">Use</button>
               )}
               <button onClick={()=>deleteAccount(acc._id)} className="p-1.5 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors">
                 <Trash2 size={13}/>
@@ -195,13 +238,9 @@ function BankAccountManager({ onSelect }) {
           <p className="text-sm text-gray-400 text-center py-4">No bank accounts saved yet</p>
         )}
       </div>
-
-      {/* Add account form */}
       {showAdd && (
         <div className="border border-gray-200 rounded-xl p-4 bg-gray-50 space-y-3">
           <p className="text-sm font-semibold text-gray-700">Add New Bank Account</p>
-
-          {/* Bank selector */}
           <div className="relative">
             <div className="relative">
               <Search size={12} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"/>
@@ -212,38 +251,29 @@ function BankAccountManager({ onSelect }) {
             {bankSearch && (
               <div className="absolute z-10 w-full bg-white border border-gray-200 rounded-lg shadow-lg max-h-48 overflow-y-auto mt-1">
                 {filteredBanks.slice(0,10).map(b => (
-                  <button key={b.code} onClick={()=>{
-                    setForm(f=>({...f,bankCode:b.code,bankName:b.name}));
-                    setBankSearch(b.name);
-                    setResolved(null);
-                  }} className="w-full text-left px-3 py-2 text-sm hover:bg-gray-50 border-b border-gray-50 last:border-none">
-                    {b.name}
-                  </button>
+                  <button key={b.code} onClick={()=>{setForm(f=>({...f,bankCode:b.code,bankName:b.name}));setBankSearch(b.name);setResolved(null);}}
+                    className="w-full text-left px-3 py-2 text-sm hover:bg-gray-50 border-b border-gray-50 last:border-none">{b.name}</button>
                 ))}
                 {!filteredBanks.length && <p className="px-3 py-2 text-sm text-gray-400">No banks found</p>}
               </div>
             )}
           </div>
-
           <div className="flex gap-2">
             <input value={form.accountNumber} onChange={e=>{setForm(f=>({...f,accountNumber:e.target.value}));setResolved(null);}}
-              placeholder="Account number (10 digits)"
-              maxLength={10}
+              placeholder="Account number (10 digits)" maxLength={10}
               className="flex-1 px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-1 focus:ring-green-400"/>
             <button onClick={verifyAccount} disabled={verifying || !form.accountNumber || !form.bankCode || form.accountNumber.length < 10}
-              className="px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white rounded-lg text-xs font-semibold disabled:opacity-50 transition-colors flex items-center gap-1">
-              {verifying ? <><Loader2 size={11} className="animate-spin"/> Verifying</> : 'Verify'}
+              className="px-3 py-2 bg-blue-500 hover:bg-blue-600 text-white rounded-lg text-xs font-semibold disabled:opacity-50 transition-colors flex items-center gap-1 whitespace-nowrap">
+              {verifying ? <><Loader2 size={11} className="animate-spin"/> Checking</> : 'Verify'}
             </button>
           </div>
-
           {resolved && (
             <div className={`p-3 rounded-lg text-sm ${resolved.error ? 'bg-red-50 text-red-600 border border-red-200' : 'bg-green-50 text-green-700 border border-green-200'}`}>
               {resolved.error ? '❌ Could not verify. Check account number and bank.' : `✅ ${resolved.account_name}`}
             </div>
           )}
-
           <div className="flex gap-2 pt-1">
-            <button onClick={()=>{setShowAdd(false);setResolved(null);setBankSearch('');setForm({accountNumber:'',bankCode:'',bankName:''}); }}
+            <button onClick={()=>{setShowAdd(false);setResolved(null);setBankSearch('');setForm({accountNumber:'',bankCode:'',bankName:''});}}
               className="flex-1 py-2 border border-gray-200 rounded-lg text-xs text-gray-600 hover:bg-gray-100">Cancel</button>
             <button onClick={saveAccount} disabled={saving || !resolved?.account_name}
               className="flex-1 py-2 bg-green-500 hover:bg-green-600 text-white rounded-lg text-xs font-semibold disabled:opacity-50 transition-colors">
@@ -268,16 +298,12 @@ const METHOD_ICONS = {
 
 export function Payments() {
   const [transactions, setTransactions] = useState([]);
-  const [total, setTotal]     = useState(0);
   const [showForm, setShowForm] = useState(false);
-  const [tab, setTab]           = useState('all');  // 'all' | 'card' | 'bank_transfer'
-  const [form, setForm]         = useState({
-    customerEmail: '', amount: '', customerName: '',
-    paymentMethod: 'all', productId: '',
-  });
-  const [result, setResult]   = useState(null);
+  const [tab, setTab]           = useState('all');
+  const [form, setForm]         = useState({ customerEmail: '', amount: '', customerName: '', paymentMethod: 'all' });
+  const [result, setResult]     = useState(null);
   const [creating, setCreating] = useState(false);
-  const [copied, setCopied]   = useState(false);
+  const [copied, setCopied]     = useState(false);
 
   useEffect(() => { fetchTx(); }, [tab]);
 
@@ -285,7 +311,6 @@ export function Payments() {
     const params = tab !== 'all' ? `?paymentMethod=${tab}` : '';
     const { data } = await api.get(`/payments/transactions${params}`);
     setTransactions(data.data);
-    setTotal(data.total);
   };
 
   const createLink = async (e) => {
@@ -321,30 +346,28 @@ export function Payments() {
   const totalRevenue = transactions.filter(t=>t.status==='success').reduce((s,t)=>s+t.amount,0);
 
   return (
-    <div className="p-8">
-      <div className="flex items-center justify-between mb-6">
+    <div className="p-4 md:p-8">
+      <div className="flex items-center justify-between mb-5 md:mb-6">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Payments</h1>
-          <p className="text-sm text-gray-500 mt-1">Transactions via card, bank transfer & USSD</p>
+          <h1 className="text-xl md:text-2xl font-bold text-gray-900">Payments</h1>
+          <p className="text-xs md:text-sm text-gray-500 mt-1">Transactions via card, bank transfer & USSD</p>
         </div>
         <button onClick={()=>{setShowForm(true);setResult(null);}}
-          className="px-4 py-2 bg-green-500 hover:bg-green-600 text-white rounded-xl text-sm font-semibold transition-colors">
-          + Generate Payment Link
+          className="px-3 md:px-4 py-2 bg-green-500 hover:bg-green-600 text-white rounded-xl text-sm font-semibold transition-colors whitespace-nowrap">
+          + <span className="hidden sm:inline">Generate </span>Payment Link
         </button>
       </div>
 
-      {/* Bank account manager */}
       <BankAccountManager />
 
-      {/* Payment link modal */}
+      {/* Modal — bottom sheet on mobile */}
       {showForm && (
-        <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6">
+        <div className="fixed inset-0 bg-black/30 flex items-end sm:items-center justify-center z-50 p-0 sm:p-4">
+          <div className="bg-white rounded-t-2xl sm:rounded-2xl shadow-2xl w-full sm:max-w-md p-6 max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between mb-5">
               <h3 className="font-bold text-gray-900">Generate Payment Link</h3>
               <button onClick={()=>{setShowForm(false);setResult(null);}} className="text-gray-400 hover:text-gray-600">✕</button>
             </div>
-
             {result ? (
               <div>
                 <div className="w-12 h-12 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-3">
@@ -358,7 +381,7 @@ export function Payments() {
                     <Copy size={13}/> {copied ? 'Copied!' : 'Copy Link'}
                   </button>
                   <a href={result} target="_blank" rel="noreferrer"
-                    className="px-4 py-2.5 border border-gray-200 rounded-xl text-sm text-gray-600 flex items-center gap-1.5 hover:bg-gray-50 transition-colors">
+                    className="px-4 py-2.5 border border-gray-200 rounded-xl text-sm text-gray-600 flex items-center gap-1.5 hover:bg-gray-50">
                     <ExternalLink size={13}/> Open
                   </a>
                 </div>
@@ -385,40 +408,23 @@ export function Payments() {
                     placeholder="e.g. 5000"
                     className="w-full px-4 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-green-400"/>
                 </div>
-
-                {/* Payment method selector */}
                 <div>
                   <label className="text-xs font-semibold text-gray-500 uppercase tracking-wide block mb-2">Payment Method</label>
                   <div className="grid grid-cols-3 gap-2">
                     {[
-                      { value:'all',           icon: CreditCard,  label:'All methods' },
-                      { value:'card',          icon: CreditCard,  label:'Card only'   },
-                      { value:'bank_transfer', icon: Building2,   label:'Bank transfer only' },
+                      { value:'all', icon: CreditCard, label:'All methods' },
+                      { value:'card', icon: CreditCard, label:'Card only' },
+                      { value:'bank_transfer', icon: Building2, label:'Bank transfer' },
                     ].map(({value, icon: Icon, label}) => (
-                      <button key={value} type="button"
-                        onClick={()=>setForm(f=>({...f,paymentMethod:value}))}
-                        className={`p-3 rounded-xl border text-xs font-medium flex flex-col items-center gap-1.5 transition-all ${
-                          form.paymentMethod === value
-                            ? 'border-green-400 bg-green-50 text-green-700'
-                            : 'border-gray-200 text-gray-500 hover:border-gray-300'
+                      <button key={value} type="button" onClick={()=>setForm(f=>({...f,paymentMethod:value}))}
+                        className={`p-2.5 rounded-xl border text-xs font-medium flex flex-col items-center gap-1.5 transition-all ${
+                          form.paymentMethod === value ? 'border-green-400 bg-green-50 text-green-700' : 'border-gray-200 text-gray-500 hover:border-gray-300'
                         }`}>
-                        <Icon size={16}/>
-                        {label}
+                        <Icon size={15}/> {label}
                       </button>
                     ))}
                   </div>
-                  {form.paymentMethod === 'bank_transfer' && (
-                    <p className="text-xs text-blue-600 mt-2 bg-blue-50 p-2 rounded-lg">
-                      Customer gets a virtual account to transfer into. Money reflects automatically.
-                    </p>
-                  )}
-                  {form.paymentMethod === 'all' && (
-                    <p className="text-xs text-gray-400 mt-2">
-                      Customer can pay with card, bank transfer, USSD, or mobile money.
-                    </p>
-                  )}
                 </div>
-
                 <div className="flex gap-3 pt-1">
                   <button type="button" onClick={()=>setShowForm(false)}
                     className="flex-1 py-2.5 border border-gray-200 rounded-xl text-sm font-medium text-gray-600 hover:bg-gray-50">Cancel</button>
@@ -433,24 +439,24 @@ export function Payments() {
         </div>
       )}
 
-      {/* Revenue summary */}
-      <div className="grid grid-cols-4 gap-4 mb-6">
+      {/* Revenue summary — 2 cols on mobile, 4 on desktop */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4 mb-5 md:mb-6">
         {[
           { label:'Total Revenue', value:`₦${totalRevenue.toLocaleString()}`, color:'bg-green-500' },
           { label:'Transactions', value: transactions.filter(t=>t.status==='success').length, color:'bg-blue-500' },
           { label:'Pending', value: transactions.filter(t=>t.status==='pending').length, color:'bg-amber-500' },
           { label:'Failed', value: transactions.filter(t=>t.status==='failed').length, color:'bg-red-500' },
         ].map(({label,value,color}) => (
-          <div key={label} className="bg-white rounded-xl p-4 border border-gray-100 shadow-sm">
-            <div className={`w-2 h-7 rounded-full ${color} mb-2`}/>
-            <p className="text-xl font-bold text-gray-900">{value}</p>
+          <div key={label} className="bg-white rounded-xl p-3 md:p-4 border border-gray-100 shadow-sm">
+            <div className={`w-2 h-6 md:h-7 rounded-full ${color} mb-2`}/>
+            <p className="text-lg md:text-xl font-bold text-gray-900">{value}</p>
             <p className="text-xs text-gray-400 mt-0.5">{label}</p>
           </div>
         ))}
       </div>
 
-      {/* Filter tabs */}
-      <div className="flex gap-2 mb-4">
+      {/* Filter tabs — scrollable on mobile */}
+      <div className="flex gap-2 mb-4 overflow-x-auto pb-1 -mx-4 px-4 md:mx-0 md:px-0 scrollbar-none">
         {[
           {value:'all', label:'All payments'},
           {value:'card', label:'Card'},
@@ -458,14 +464,14 @@ export function Payments() {
           {value:'ussd', label:'USSD'},
         ].map(({value,label}) => (
           <button key={value} onClick={()=>setTab(value)}
-            className={`px-4 py-1.5 rounded-full text-xs font-medium transition-colors ${
+            className={`px-4 py-1.5 rounded-full text-xs font-medium transition-colors whitespace-nowrap flex-shrink-0 ${
               tab===value ? 'bg-green-500 text-white' : 'bg-white border border-gray-200 text-gray-600 hover:border-green-300'
             }`}>{label}</button>
         ))}
       </div>
 
-      {/* Transactions table */}
-      <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
+      {/* Transactions — table on desktop, cards on mobile */}
+      <div className="hidden md:block bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
         <table className="w-full">
           <thead>
             <tr className="border-b border-gray-100 bg-gray-50">
@@ -504,6 +510,47 @@ export function Payments() {
           </tbody>
         </table>
       </div>
+
+      {/* Mobile transaction cards */}
+      <div className="md:hidden space-y-3">
+        {transactions.map(t => {
+          const method = METHOD_ICONS[t.paymentMethod] || METHOD_ICONS.card;
+          const MethodIcon = method.icon;
+          return (
+            <div key={t._id} className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
+              <div className="flex items-start justify-between mb-2">
+                <div>
+                  <p className="font-semibold text-gray-900">{t.customerName||'—'}</p>
+                  <p className="text-xs text-gray-400">{t.customerEmail}</p>
+                </div>
+                <p className="text-base font-bold text-gray-900">₦{t.amount.toLocaleString()}</p>
+              </div>
+              <div className="flex items-center justify-between text-xs">
+                <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full font-medium ${method.color}`}>
+                  <MethodIcon size={10}/> {method.label}
+                </span>
+                <span className={`px-2 py-0.5 rounded-full font-medium ${statusBadge(t.status)}`}>{t.status}</span>
+                <span className="text-gray-400">{format(new Date(t.createdAt),'MMM d')}</span>
+              </div>
+              <p className="text-xs text-gray-300 font-mono mt-2 truncate">{t.reference}</p>
+            </div>
+          );
+        })}
+        {!transactions.length && (
+          <div className="text-center py-12 text-gray-400 text-sm bg-white rounded-xl border border-gray-100">
+            <CreditCard size={32} className="mx-auto mb-3 opacity-30" />
+            No transactions yet
+          </div>
+        )}
+      </div>
     </div>
   );
 }
+
+// Keep CheckCircle available for the modal
+const CheckCircle = ({ size, className }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className={className}>
+    <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+    <polyline points="22 4 12 14.01 9 11.01"/>
+  </svg>
+);

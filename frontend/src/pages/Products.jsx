@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Plus, Edit2, Trash2, Package, Check, X } from 'lucide-react';
+import { Plus, Edit2, Trash2, Package, X } from 'lucide-react';
 import api from '../utils/api';
 
 const defaultForm = { name: '', description: '', price: '', category: '', currency: 'NGN' };
@@ -46,22 +46,24 @@ export default function Products() {
   };
 
   return (
-    <div className="p-8">
-      <div className="flex items-center justify-between mb-6">
+    <div className="p-4 md:p-8">
+      <div className="flex items-center justify-between mb-5 md:mb-6">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Products & Services</h1>
-          <p className="text-sm text-gray-500 mt-1">Manage your catalog — AI uses this to suggest products</p>
+          <h1 className="text-xl md:text-2xl font-bold text-gray-900">Products & Services</h1>
+          <p className="text-xs md:text-sm text-gray-500 mt-1">Manage your catalog — AI uses this to suggest products</p>
         </div>
-        <button onClick={() => { setShowForm(true); setEditing(null); setForm(defaultForm); }}
-          className="flex items-center gap-2 px-4 py-2 bg-green-500 hover:bg-green-600 text-white rounded-xl text-sm font-semibold transition-colors">
-          <Plus size={16} /> Add Product
+        <button
+          onClick={() => { setShowForm(true); setEditing(null); setForm(defaultForm); }}
+          className="flex items-center gap-1.5 md:gap-2 px-3 md:px-4 py-2 bg-green-500 hover:bg-green-600 text-white rounded-xl text-sm font-semibold transition-colors"
+        >
+          <Plus size={16} /> <span className="hidden sm:inline">Add Product</span><span className="sm:hidden">Add</span>
         </button>
       </div>
 
       {/* Form Modal */}
       {showForm && (
-        <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6">
+        <div className="fixed inset-0 bg-black/30 flex items-end sm:items-center justify-center z-50 p-0 sm:p-4">
+          <div className="bg-white rounded-t-2xl sm:rounded-2xl shadow-2xl w-full sm:max-w-md p-6 max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between mb-5">
               <h3 className="font-bold text-gray-900">{editing ? 'Edit Product' : 'New Product'}</h3>
               <button onClick={() => setShowForm(false)}><X size={18} className="text-gray-400" /></button>
@@ -91,10 +93,10 @@ export default function Products() {
         </div>
       )}
 
-      {/* Grid */}
-      <div className="grid grid-cols-3 gap-4">
+      {/* Grid — 1 col mobile, 2 col tablet, 3 col desktop */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
         {products.map(p => (
-          <div key={p._id} className="bg-white rounded-xl border border-gray-100 p-5 shadow-sm hover:shadow-md transition-shadow">
+          <div key={p._id} className="bg-white rounded-xl border border-gray-100 p-4 md:p-5 shadow-sm hover:shadow-md transition-shadow">
             <div className="flex items-start justify-between mb-3">
               <div className="w-10 h-10 bg-green-50 rounded-xl flex items-center justify-center">
                 <Package size={18} className="text-green-600" />
@@ -120,7 +122,7 @@ export default function Products() {
           </div>
         ))}
         {!products.length && (
-          <div className="col-span-3 text-center py-16 text-gray-400">
+          <div className="col-span-full text-center py-16 text-gray-400">
             <Package size={40} className="mx-auto mb-3 opacity-30" />
             <p>No products yet. Add your first product above.</p>
           </div>

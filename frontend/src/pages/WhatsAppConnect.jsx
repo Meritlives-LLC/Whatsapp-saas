@@ -1,382 +1,385 @@
-import { useState, useEffect } from 'react';
-import { CheckCircle, AlertTriangle, ExternalLink, Copy, RefreshCw, Wifi, WifiOff, ChevronRight } from 'lucide-react';
+// frontend/src/pages/WhatsAppConnect.jsx
+// Replaces the manual 6-step form with a one-click Meta OAuth flow.
+// Falls back to manual entry if META_APP_ID is not configured.
+
+import { useState, useEffect, useCallback } from 'react';
+import {
+  CheckCircle, AlertTriangle, ExternalLink, Wifi, WifiOff,
+  RefreshCw, LogOut, ChevronDown, Phone,
+} from 'lucide-react';
 import api from '../utils/api';
-import { useAuth } from '../context/AuthContext';
 
-const STEPS = [
-  { n: 1, title: 'Create Meta Developer Account',   done: true  },
-  { n: 2, title: 'Create a Meta App',               done: false },
-  { n: 3, title: 'Add WhatsApp to your app',        done: false },
-  { n: 4, title: 'Get your credentials',            done: false },
-  { n: 5, title: 'Paste credentials below',         done: false },
-  { n: 6, title: 'Set webhook in Meta',             done: false },
-];
+// ─── Config ───────────────────────────────────────────────────────────────────
+const HAS_META_APP = !!import.meta.env.VITE_META_APP_ID;   // set in .env.local
 
+// ─── Main component ───────────────────────────────────────────────────────────
 export default function WhatsAppConnect() {
-  const { business } = useAuth();
-  const [form, setForm] = useState({
-    whatsappPhoneNumberId: '',
-    whatsappAccessToken: '',
-    whatsappVerifyToken: '',
-  });
-  const [saving, setSaving]     = useState(false);
-  const [testing, setTesting]   = useState(false);
-  const [saved, setSaved]       = useState(false);
-  const [status, setStatus]     = useState(null); // 'connected' | 'failed' | null
-  const [copied, setCopied]     = useState('');
-  const [activeStep, setActiveStep] = useState(1);
+  const [status, setStatus]         = useState('idle');   // idle | loading | connected | error
+  const [errorMsg, setErrorMsg]     = useState('');
+  const [connectedPhone, setConnectedPhone] = useState('');
+  const [oauthLoading, setOauthLoading]     = useState(false);
 
-  // Pre-fill from existing business settings
+  // Multi-phone picker (when user has >1 WhatsApp number)
+  const [phonePicker, setPhonePicker] = useState(null);   // { token, phones }
+  const [pickerLoading, setPickerLoading] = useState(false);
+
+  // Check token status on mount + handle OAuth redirect params
   useEffect(() => {
-    api.get('/business').then(({ data }) => {
-      const biz = data.data;
-      if (biz.whatsappPhoneNumberId) {
-        setForm({
-          whatsappPhoneNumberId: biz.whatsappPhoneNumberId || '',
-          whatsappAccessToken:   biz.whatsappAccessToken   || '',
-          whatsappVerifyToken:   biz.whatsappVerifyToken   || '',
-        });
-        if (biz.whatsappPhoneNumberId && biz.whatsappAccessToken) {
-          setStatus('connected');
-          setActiveStep(6);
-        }
-      }
-    }).catch(() => {});
-  }, []);
+    const params = new URLSearchParams(window.location.search);
+    const successParam = params.get('success');
+    const errorParam   = params.get('error');
+    const phoneParam   = params.get('phone');
+    const stepParam    = params.get('step');
+    const dataParam    = params.get('data');
 
-  const backendUrl = `${window.location.origin.replace('3000', '5000')}/api/webhook`;
-  // In production the backend URL comes from env
-  const webhookUrl = import.meta.env.VITE_API_URL
-    ? `${import.meta.env.VITE_API_URL}/api/webhook`
-    : backendUrl;
+    // Clean URL
+    if (params.toString()) {
+      window.history.replaceState({}, '', window.location.pathname);
+    }
 
-  const copyText = (text, key) => {
-    navigator.clipboard.writeText(text);
-    setCopied(key);
-    setTimeout(() => setCopied(''), 2000);
-  };
-
-  const saveCredentials = async () => {
-    if (!form.whatsappPhoneNumberId || !form.whatsappAccessToken || !form.whatsappVerifyToken) {
-      alert('Please fill in all 3 fields');
+    if (errorParam) {
+      const messages = {
+        denied: 'You declined the permission request on Facebook.',
+        no_phone_numbers: 'No WhatsApp Business phone numbers found on your Meta account. Make sure you have a WhatsApp Business Account.',
+        token_exchange:   `Meta token exchange failed: ${params.get('detail') || 'unknown error'}`,
+        invalid_state:    'Security check failed. Please try again.',
+        invalid_callback: 'Invalid callback from Meta. Please try again.',
+      };
+      setStatus('error');
+      setErrorMsg(messages[errorParam] || `Something went wrong (${errorParam})`);
       return;
     }
-    setSaving(true);
-    try {
-      await api.put('/business', form);
-      setSaved(true);
-      setActiveStep(6);
-      setTimeout(() => setSaved(false), 3000);
-    } catch (err) {
-      alert('Failed to save. Try again.');
-    } finally {
-      setSaving(false);
-    }
-  };
 
-  const testConnection = async () => {
-    setTesting(true);
-    setStatus(null);
+    if (successParam === 'true') {
+      setStatus('connected');
+      setConnectedPhone(decodeURIComponent(phoneParam || ''));
+      return;
+    }
+
+    if (stepParam === 'pick_phone' && dataParam) {
+      try {
+        const parsed = JSON.parse(decodeURIComponent(dataParam));
+        setPhonePicker(parsed);
+        setStatus('pick_phone');
+      } catch {
+        setStatus('error');
+        setErrorMsg('Failed to parse phone list from Meta. Please try again.');
+      }
+      return;
+    }
+
+    // Default: check existing token
+    checkTokenStatus();
+  }, []);
+
+  const checkTokenStatus = useCallback(async () => {
+    setStatus('loading');
     try {
-      const { data } = await api.post('/business/test-whatsapp');
-      setStatus(data.success ? 'connected' : 'failed');
+      const { data } = await api.get('/meta/token-status');
+      if (data.connected) {
+        setStatus('connected');
+        setConnectedPhone(data.phone || '');
+      } else {
+        setStatus('idle');
+      }
     } catch {
-      // Fallback: just check if the fields are filled
-      setStatus(form.whatsappPhoneNumberId && form.whatsappAccessToken ? 'connected' : 'failed');
-    } finally {
-      setTesting(false);
+      setStatus('idle');
+    }
+  }, []);
+
+  // ── Kick off Meta OAuth ──────────────────────────────────────────────────────
+  const startOAuth = async () => {
+    setOauthLoading(true);
+    try {
+      const { data } = await api.get('/meta/oauth-url');
+      // Redirect the whole page to Meta — user will come back to /whatsapp-connect
+      window.location.href = data.url;
+    } catch (err) {
+      setStatus('error');
+      setErrorMsg(err.response?.data?.message || 'Failed to start login. Is META_APP_ID set on the server?');
+      setOauthLoading(false);
     }
   };
 
-  const CopyBtn = ({ text, id, label }) => (
-    <button onClick={() => copyText(text, id)}
-      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
-        copied === id ? 'bg-green-100 text-green-700' : 'bg-gray-100 hover:bg-gray-200 text-gray-600'
-      }`}>
-      <Copy size={12} /> {copied === id ? 'Copied!' : label}
-    </button>
-  );
+  // ── User picks one phone from the list ──────────────────────────────────────
+  const selectPhone = async (phone) => {
+    setPickerLoading(true);
+    try {
+      await api.post('/meta/select-phone', {
+        phoneNumberId: phone.phoneNumberId,
+        accessToken: phonePicker.token,
+        wabaId: phone.wabaId,
+      });
+      setStatus('connected');
+      setConnectedPhone(phone.displayNumber);
+      setPhonePicker(null);
+    } catch (err) {
+      setStatus('error');
+      setErrorMsg(err.response?.data?.message || 'Failed to save phone. Please try again.');
+    } finally {
+      setPickerLoading(false);
+    }
+  };
 
+  // ── Disconnect ───────────────────────────────────────────────────────────────
+  const disconnect = async () => {
+    if (!confirm('Disconnect WhatsApp? AI auto-replies will stop.')) return;
+    try {
+      await api.delete('/meta/disconnect');
+      setStatus('idle');
+      setConnectedPhone('');
+    } catch {
+      alert('Failed to disconnect. Please try again.');
+    }
+  };
+
+  // ─────────────────────────────────────────────────────────────────────────────
   return (
-    <div className="p-4 md:p-8 max-w-3xl mx-auto">
+    <div className="p-4 md:p-8 max-w-2xl mx-auto">
       {/* Header */}
-      <div className="mb-6 md:mb-8">
-        <div className="flex items-center gap-3 mb-2">
-          <div className="w-10 h-10 bg-green-500 rounded-xl flex items-center justify-center">
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="white">
-              <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347z"/>
-              <path d="M12 0C5.373 0 0 5.373 0 12c0 2.123.554 4.118 1.528 5.845L.057 23.571a.75.75 0 00.918.919l5.733-1.472A11.952 11.952 0 0012 24c6.627 0 12-5.373 12-12S18.627 0 12 0zm0 22c-1.9 0-3.7-.503-5.257-1.39l-.374-.214-3.898 1.001.99-3.892-.228-.38A9.961 9.961 0 012 12C2 6.477 6.477 2 12 2s10 4.477 10 10-4.477 10-10 10z"/>
-            </svg>
+      <div className="flex items-center gap-3 mb-8">
+        <div className="w-11 h-11 bg-green-500 rounded-2xl flex items-center justify-center shadow-lg shadow-green-200">
+          <WhatsAppIcon />
+        </div>
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Connect WhatsApp</h1>
+          <p className="text-sm text-gray-500">Link your WhatsApp Business number via Facebook Login</p>
+        </div>
+      </div>
+
+      {/* ── CONNECTED ── */}
+      {status === 'connected' && (
+        <ConnectedCard phone={connectedPhone} onDisconnect={disconnect} onRecheck={checkTokenStatus} />
+      )}
+
+      {/* ── PHONE PICKER ── */}
+      {status === 'pick_phone' && phonePicker && (
+        <PhonePicker phones={phonePicker.phones} onSelect={selectPhone} loading={pickerLoading} />
+      )}
+
+      {/* ── ERROR ── */}
+      {status === 'error' && (
+        <ErrorCard message={errorMsg} onRetry={() => setStatus('idle')} />
+      )}
+
+      {/* ── IDLE / CTA ── */}
+      {(status === 'idle' || status === 'loading') && (
+        <div className="space-y-6">
+          {/* One-click connect card */}
+          <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-8 text-center">
+            <div className="w-16 h-16 bg-green-50 rounded-2xl flex items-center justify-center mx-auto mb-5">
+              <WhatsAppIcon size={32} color="#25D366" />
+            </div>
+            <h2 className="text-xl font-bold text-gray-900 mb-2">
+              Connect with Facebook Login
+            </h2>
+            <p className="text-sm text-gray-500 mb-8 max-w-sm mx-auto leading-relaxed">
+              Click below to securely link your WhatsApp Business account.
+              You'll be taken to Facebook, grant permission, and land back here — connected.
+            </p>
+
+            <button
+              onClick={startOAuth}
+              disabled={oauthLoading || status === 'loading'}
+              className="w-full max-w-xs mx-auto flex items-center justify-center gap-3 px-6 py-3.5 bg-[#1877F2] hover:bg-[#166FE5] active:bg-[#1566D6] text-white rounded-2xl text-base font-semibold transition-all shadow-md shadow-blue-200 disabled:opacity-60"
+            >
+              {oauthLoading ? (
+                <><RefreshCw size={18} className="animate-spin" /> Redirecting to Facebook…</>
+              ) : (
+                <><FacebookIcon /> Continue with Facebook</>
+              )}
+            </button>
+
+            {/* What happens explainer */}
+            <div className="mt-8 text-left bg-gray-50 rounded-xl p-4 space-y-3">
+              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">What happens when you click:</p>
+              {[
+                ['1', 'You're sent to Facebook / Meta'],
+                ['2', 'Facebook asks: "Allow this app to access your WhatsApp Business account?"'],
+                ['3', 'You click Allow'],
+                ['4', 'Facebook gives us a secure token'],
+                ['5', 'We save it — WhatsApp is connected ✓'],
+              ].map(([n, text]) => (
+                <div key={n} className="flex gap-3 items-start">
+                  <span className="w-5 h-5 bg-white border border-gray-200 rounded-full flex items-center justify-center text-xs font-bold text-gray-500 flex-shrink-0">{n}</span>
+                  <span className="text-sm text-gray-600">{text}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Permissions info */}
+          <PermissionsInfo />
+
+          {/* Prerequisites */}
+          <PrerequisitesCard />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Sub-components ───────────────────────────────────────────────────────────
+
+function ConnectedCard({ phone, onDisconnect, onRecheck }) {
+  return (
+    <div className="bg-white rounded-2xl border border-green-200 shadow-sm p-6">
+      <div className="flex items-start justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 bg-green-100 rounded-xl flex items-center justify-center">
+            <Wifi size={20} className="text-green-600" />
           </div>
           <div>
-            <h1 className="text-xl md:text-2xl font-bold text-gray-900">Connect WhatsApp</h1>
-            <p className="text-sm text-gray-500">Link your WhatsApp Business number to start AI automation</p>
+            <p className="font-bold text-green-900">WhatsApp Connected</p>
+            {phone && <p className="text-sm text-green-700 font-mono">{phone}</p>}
+            <p className="text-xs text-green-600 mt-0.5">AI auto-replies are active</p>
           </div>
         </div>
-
-        {/* Connection status badge */}
-        {status === 'connected' && (
-          <div className="mt-3 flex items-center gap-2 text-sm text-green-700 bg-green-50 border border-green-200 px-4 py-2.5 rounded-xl w-fit">
-            <Wifi size={16} /> WhatsApp connected and receiving messages
-          </div>
-        )}
-        {status === 'failed' && (
-          <div className="mt-3 flex items-center gap-2 text-sm text-red-600 bg-red-50 border border-red-200 px-4 py-2.5 rounded-xl w-fit">
-            <WifiOff size={16} /> Connection failed — check your credentials
-          </div>
-        )}
+        <div className="flex gap-2 flex-shrink-0">
+          <button
+            onClick={onRecheck}
+            className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+            title="Re-check connection"
+          >
+            <RefreshCw size={16} />
+          </button>
+          <button
+            onClick={onDisconnect}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 rounded-lg transition-colors font-medium"
+          >
+            <LogOut size={14} /> Disconnect
+          </button>
+        </div>
       </div>
 
-      {/* Step progress */}
-      <div className="flex items-center gap-1 mb-8 overflow-x-auto pb-2">
-        {[1,2,3,4,5,6].map((n, i) => (
-          <div key={n} className="flex items-center gap-1 flex-shrink-0">
-            <button onClick={() => setActiveStep(n)}
-              className={`w-7 h-7 rounded-full text-xs font-bold transition-all ${
-                n < activeStep  ? 'bg-green-500 text-white' :
-                n === activeStep ? 'bg-gray-900 text-white' :
-                                   'bg-gray-200 text-gray-500'
-              }`}>
-              {n < activeStep ? '✓' : n}
-            </button>
-            {i < 5 && <div className={`w-6 md:w-10 h-0.5 ${n < activeStep ? 'bg-green-400' : 'bg-gray-200'}`} />}
-          </div>
-        ))}
-      </div>
-
-      {/* ── STEP 1 ── */}
-      {activeStep === 1 && (
-        <StepCard n={1} title="Create a Meta Developer Account" onNext={() => setActiveStep(2)}>
-          <p className="text-sm text-gray-600 mb-4">
-            You need a free Meta developer account. If you already have a Facebook account, you can use that.
-          </p>
-          <a href="https://developers.facebook.com" target="_blank" rel="noreferrer"
-            className="inline-flex items-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-sm font-semibold transition-colors">
-            <ExternalLink size={14} /> Open developers.facebook.com
-          </a>
-          <p className="text-xs text-gray-400 mt-3">Click "Get Started" or "Log In" at the top right of the page.</p>
-        </StepCard>
-      )}
-
-      {/* ── STEP 2 ── */}
-      {activeStep === 2 && (
-        <StepCard n={2} title="Create a Meta App" onNext={() => setActiveStep(3)} onBack={() => setActiveStep(1)}>
-          <ol className="space-y-3 text-sm text-gray-600">
-            <Li n="1">In the Meta developer dashboard, click <strong>"My Apps"</strong> → <strong>"Create App"</strong></Li>
-            <Li n="2">When asked "What do you want your app to do?" select <strong>"Other"</strong></Li>
-            <Li n="3">For app type, select <strong>"Business"</strong></Li>
-            <Li n="4">Give your app a name (e.g. <em>"{business?.name || 'My Business'} Bot"</em>) and click <strong>Create App</strong></Li>
-          </ol>
-          <img src="https://i.imgur.com/placeholder.png" className="hidden" alt="" />
-          <div className="mt-4 p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-700">
-            💡 The app you create is YOUR platform app. Your customers' WhatsApp numbers connect through it.
-          </div>
-        </StepCard>
-      )}
-
-      {/* ── STEP 3 ── */}
-      {activeStep === 3 && (
-        <StepCard n={3} title="Add WhatsApp to Your App" onNext={() => setActiveStep(4)} onBack={() => setActiveStep(2)}>
-          <ol className="space-y-3 text-sm text-gray-600">
-            <Li n="1">Inside your app dashboard, scroll down to find <strong>"WhatsApp"</strong> in the products list</Li>
-            <Li n="2">Click <strong>"Set Up"</strong> next to WhatsApp</Li>
-            <Li n="3">You'll be asked to connect a <strong>Meta Business Account</strong>. Create one for free if you don't have one.</Li>
-            <Li n="4">Once connected, you'll land on the <strong>WhatsApp → API Setup</strong> page</Li>
-          </ol>
-          <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded-xl text-xs text-blue-700">
-            💡 Meta gives you a <strong>free test phone number</strong> to start with. You can add your real business number later under "Phone Numbers".
-          </div>
-        </StepCard>
-      )}
-
-      {/* ── STEP 4 ── */}
-      {activeStep === 4 && (
-        <StepCard n={4} title="Get Your Credentials" onNext={() => setActiveStep(5)} onBack={() => setActiveStep(3)}>
-          <p className="text-sm text-gray-600 mb-4">On the <strong>WhatsApp → API Setup</strong> page, find and copy these 2 values:</p>
-          <div className="space-y-3">
-            <CredBox
-              label="Phone Number ID"
-              example="123456789012345"
-              hint="Under 'From' section. It's a long number, NOT your actual phone number."
-            />
-            <CredBox
-              label="Temporary Access Token"
-              example="EAAxxxxx... (very long string)"
-              hint="Click 'Generate token'. For production, create a permanent System User token instead (see tip below)."
-            />
-          </div>
-          <div className="mt-4 p-3 bg-green-50 border border-green-200 rounded-xl text-xs text-green-700">
-            💡 <strong>For production use:</strong> Go to <a href="https://business.facebook.com" target="_blank" rel="noreferrer" className="underline">business.facebook.com</a> → Settings → Users → System Users → Create System User (Admin role) → Generate Token → select your WhatsApp app → check <code>whatsapp_business_messaging</code>. This token never expires.
-          </div>
-        </StepCard>
-      )}
-
-      {/* ── STEP 5 ── */}
-      {activeStep === 5 && (
-        <StepCard n={5} title="Paste Your Credentials Here" onBack={() => setActiveStep(4)}
-          customAction={
-            <button onClick={saveCredentials} disabled={saving}
-              className="px-5 py-2.5 bg-green-500 hover:bg-green-600 text-white rounded-xl text-sm font-semibold disabled:opacity-60 flex items-center gap-2 transition-colors">
-              {saving ? <><RefreshCw size={14} className="animate-spin" /> Saving...</> : saved ? '✓ Saved!' : 'Save & Continue →'}
-            </button>
-          }>
-          <div className="space-y-4">
-            <div>
-              <label className="text-xs font-semibold text-gray-500 uppercase tracking-wide block mb-1.5">
-                Phone Number ID <span className="text-red-400">*</span>
-              </label>
-              <input value={form.whatsappPhoneNumberId}
-                onChange={e => setForm(f => ({ ...f, whatsappPhoneNumberId: e.target.value }))}
-                placeholder="e.g. 123456789012345"
-                className="w-full px-4 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-green-400 font-mono" />
-            </div>
-            <div>
-              <label className="text-xs font-semibold text-gray-500 uppercase tracking-wide block mb-1.5">
-                Access Token <span className="text-red-400">*</span>
-              </label>
-              <textarea value={form.whatsappAccessToken}
-                onChange={e => setForm(f => ({ ...f, whatsappAccessToken: e.target.value }))}
-                placeholder="EAAxxxxx..."
-                rows={3}
-                className="w-full px-4 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-green-400 font-mono resize-none" />
-            </div>
-            <div>
-              <label className="text-xs font-semibold text-gray-500 uppercase tracking-wide block mb-1.5">
-                Verify Token <span className="text-red-400">*</span>
-              </label>
-              <input value={form.whatsappVerifyToken}
-                onChange={e => setForm(f => ({ ...f, whatsappVerifyToken: e.target.value }))}
-                placeholder="Make up any word e.g. mybusiness_secret_2024"
-                className="w-full px-4 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-green-400" />
-              <p className="text-xs text-gray-400 mt-1">You decide this value. You'll paste it into Meta too. Just don't share it publicly.</p>
-            </div>
-          </div>
-        </StepCard>
-      )}
-
-      {/* ── STEP 6 ── */}
-      {activeStep === 6 && (
-        <StepCard n={6} title="Set Webhook in Meta Dashboard" onBack={() => setActiveStep(5)}>
-          <p className="text-sm text-gray-600 mb-4">
-            Go back to your Meta app → <strong>WhatsApp → Configuration → Webhook</strong> and fill in:
-          </p>
-
-          <div className="space-y-3 mb-5">
-            {/* Webhook URL */}
-            <div className="bg-gray-50 border border-gray-200 rounded-xl p-4">
-              <div className="flex items-center justify-between mb-1">
-                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Callback URL (paste this into Meta)</p>
-                <CopyBtn text={webhookUrl} id="url" label="Copy URL" />
-              </div>
-              <code className="text-sm text-gray-800 break-all font-mono">{webhookUrl}</code>
-            </div>
-
-            {/* Verify token */}
-            <div className="bg-gray-50 border border-gray-200 rounded-xl p-4">
-              <div className="flex items-center justify-between mb-1">
-                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Verify Token (paste this into Meta)</p>
-                <CopyBtn text={form.whatsappVerifyToken || 'Save your credentials first'} id="token" label="Copy Token" />
-              </div>
-              <code className="text-sm text-gray-800 font-mono">
-                {form.whatsappVerifyToken || <span className="text-gray-400 italic">Save credentials in Step 5 first</span>}
-              </code>
-            </div>
-          </div>
-
-          <ol className="space-y-2 text-sm text-gray-600 mb-5">
-            <Li n="1">In Meta, go to <strong>WhatsApp → Configuration → Webhook</strong></Li>
-            <Li n="2">Click <strong>"Edit"</strong> (or "Configure")</Li>
-            <Li n="3">Paste the Callback URL above into "Callback URL"</Li>
-            <Li n="4">Paste your Verify Token above into "Verify Token"</Li>
-            <Li n="5">Click <strong>"Verify and Save"</strong> — Meta will call your server to confirm</Li>
-            <Li n="6">After saving, click <strong>"Subscribe"</strong> next to <code>messages</code> under Webhook Fields</Li>
-          </ol>
-
-          {/* Test connection */}
-          <div className="border-t border-gray-100 pt-5">
-            <p className="text-sm font-semibold text-gray-900 mb-3">Test your connection</p>
-            <div className="flex items-center gap-3 flex-wrap">
-              <button onClick={testConnection} disabled={testing}
-                className="flex items-center gap-2 px-4 py-2.5 bg-gray-900 hover:bg-gray-700 text-white rounded-xl text-sm font-semibold disabled:opacity-60 transition-colors">
-                {testing ? <><RefreshCw size={14} className="animate-spin" /> Testing...</> : 'Test Connection'}
-              </button>
-              {status === 'connected' && (
-                <div className="flex items-center gap-1.5 text-green-600 text-sm font-medium">
-                  <CheckCircle size={16} /> Connected! Messages will flow through.
-                </div>
-              )}
-              {status === 'failed' && (
-                <div className="flex items-center gap-1.5 text-red-500 text-sm font-medium">
-                  <AlertTriangle size={16} /> Failed. Check credentials and try again.
-                </div>
-              )}
-            </div>
-
-            {status === 'connected' && (
-              <div className="mt-4 p-4 bg-green-50 border border-green-200 rounded-xl">
-                <p className="text-sm font-bold text-green-800 mb-1">🎉 You're all set!</p>
-                <p className="text-xs text-green-700">
-                  Send a message to your WhatsApp number and the AI will reply automatically.
-                  Check the <strong>Conversations</strong> tab to see incoming messages live.
-                </p>
-              </div>
-            )}
-          </div>
-        </StepCard>
-      )}
-
-      {/* Troubleshoot section */}
-      <div className="mt-6 bg-amber-50 border border-amber-200 rounded-xl p-4">
-        <p className="text-sm font-semibold text-amber-800 mb-2 flex items-center gap-2">
-          <AlertTriangle size={14} /> If Meta says "Invalid" when you verify the webhook:
+      <div className="mt-5 p-4 bg-green-50 rounded-xl">
+        <p className="text-sm text-green-800">
+          🎉 You're all set! Send a message to your WhatsApp number and the AI will reply automatically.
+          Check the <strong>Conversations</strong> tab to see incoming messages live.
         </p>
-        <ol className="space-y-1.5 text-xs text-amber-700">
-          <Li n="1">Make sure your backend is deployed and publicly accessible (not localhost)</Li>
-          <Li n="2">The Verify Token in Meta must <strong>exactly match</strong> what you typed in Step 5</Li>
-          <Li n="3">Your Callback URL must start with <strong>https://</strong> (not http://)</Li>
-          <Li n="4">Railway/Render must be running — check your deployment logs</Li>
-          <Li n="5">Try opening your webhook URL in a browser — it should show a page (not an error)</Li>
-        </ol>
       </div>
     </div>
   );
 }
 
-// ── Sub-components ────────────────────────────────────────────────────────────
-
-const StepCard = ({ n, title, children, onNext, onBack, customAction }) => (
-  <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5 md:p-6">
-    <div className="flex items-center gap-3 mb-5">
-      <div className="w-8 h-8 bg-gray-900 rounded-xl flex items-center justify-center text-white font-bold text-sm flex-shrink-0">{n}</div>
-      <h2 className="font-bold text-gray-900 text-base md:text-lg">{title}</h2>
+function PhonePicker({ phones, onSelect, loading }) {
+  return (
+    <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6">
+      <h2 className="font-bold text-gray-900 text-lg mb-1">Choose a WhatsApp Number</h2>
+      <p className="text-sm text-gray-500 mb-5">We found multiple WhatsApp numbers on your account. Which one should receive AI replies?</p>
+      <div className="space-y-3">
+        {phones.map((phone) => (
+          <button
+            key={phone.phoneNumberId}
+            onClick={() => onSelect(phone)}
+            disabled={loading}
+            className="w-full flex items-center gap-4 p-4 border border-gray-200 hover:border-green-400 hover:bg-green-50 rounded-xl text-left transition-all disabled:opacity-60"
+          >
+            <div className="w-10 h-10 bg-gray-100 rounded-xl flex items-center justify-center flex-shrink-0">
+              <Phone size={18} className="text-gray-600" />
+            </div>
+            <div>
+              <p className="font-semibold text-gray-900">{phone.displayNumber}</p>
+              <p className="text-xs text-gray-500">{phone.verifiedName} · WABA: {phone.wabaName}</p>
+            </div>
+            {loading && <RefreshCw size={16} className="animate-spin ml-auto text-gray-400" />}
+          </button>
+        ))}
+      </div>
     </div>
-    {children}
-    <div className="flex items-center justify-between mt-6 pt-4 border-t border-gray-100">
-      {onBack
-        ? <button onClick={onBack} className="text-sm text-gray-500 hover:text-gray-700 flex items-center gap-1">← Back</button>
-        : <div />
-      }
-      {customAction || (onNext && (
-        <button onClick={onNext}
-          className="flex items-center gap-2 px-5 py-2.5 bg-green-500 hover:bg-green-600 text-white rounded-xl text-sm font-semibold transition-colors">
-          Next <ChevronRight size={14} />
-        </button>
-      ))}
+  );
+}
+
+function ErrorCard({ message, onRetry }) {
+  return (
+    <div className="bg-white rounded-2xl border border-red-200 shadow-sm p-6">
+      <div className="flex items-center gap-3 mb-4">
+        <div className="w-10 h-10 bg-red-100 rounded-xl flex items-center justify-center">
+          <WifiOff size={20} className="text-red-500" />
+        </div>
+        <div>
+          <p className="font-bold text-red-900">Connection Failed</p>
+          <p className="text-sm text-red-700">{message}</p>
+        </div>
+      </div>
+      <button
+        onClick={onRetry}
+        className="px-4 py-2 bg-gray-900 text-white rounded-xl text-sm font-semibold hover:bg-gray-700 transition-colors"
+      >
+        Try Again
+      </button>
     </div>
-  </div>
-);
+  );
+}
 
-const Li = ({ n, children }) => (
-  <li className="flex gap-3">
-    <span className="w-5 h-5 bg-gray-100 rounded-full flex items-center justify-center text-xs font-bold text-gray-500 flex-shrink-0 mt-0.5">{n}</span>
-    <span>{children}</span>
-  </li>
-);
+function PermissionsInfo() {
+  return (
+    <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
+      <p className="text-sm font-semibold text-blue-900 mb-2">🔐 Permissions we request:</p>
+      <ul className="space-y-1.5">
+        {[
+          ['whatsapp_business_messaging', 'Send and receive WhatsApp messages on your behalf'],
+          ['whatsapp_business_management', 'Read your WhatsApp Business Account settings'],
+          ['business_management', 'Read your Meta Business Suite account info'],
+        ].map(([perm, desc]) => (
+          <li key={perm} className="flex gap-2 text-xs text-blue-800">
+            <CheckCircle size={13} className="text-blue-500 flex-shrink-0 mt-0.5" />
+            <span><code className="font-mono bg-blue-100 px-1 rounded">{perm}</code> — {desc}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
 
-const CredBox = ({ label, example, hint }) => (
-  <div className="p-3 bg-gray-50 border border-gray-200 rounded-xl">
-    <p className="text-xs font-semibold text-gray-700 mb-0.5">{label}</p>
-    <p className="text-xs font-mono text-gray-400 mb-1">{example}</p>
-    <p className="text-xs text-gray-500">{hint}</p>
-  </div>
-);
+function PrerequisitesCard() {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="border border-gray-200 rounded-xl overflow-hidden">
+      <button
+        className="w-full flex items-center justify-between px-4 py-3 bg-gray-50 text-sm font-semibold text-gray-700 hover:bg-gray-100 transition-colors"
+        onClick={() => setOpen(o => !o)}
+      >
+        Prerequisites checklist
+        <ChevronDown size={16} className={`transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+      {open && (
+        <div className="px-4 py-3 space-y-2 text-sm text-gray-700 bg-white">
+          {[
+            ['You have a Facebook account', true],
+            ['You have a Meta Developer App (Business type)', false,
+              <a key="link" href="https://developers.facebook.com" target="_blank" rel="noreferrer" className="text-blue-600 underline flex items-center gap-1">Create one <ExternalLink size={11} /></a>],
+            ['WhatsApp product added to your Meta app', false],
+            ['Your Meta app has a WhatsApp Business Account linked', false],
+            ['At least one phone number in your WhatsApp Business Account', false],
+          ].map(([label, done, extra], i) => (
+            <div key={i} className="flex gap-2 items-start">
+              <span className={`text-base flex-shrink-0 ${done ? 'text-green-500' : 'text-gray-300'}`}>
+                {done ? '✓' : '○'}
+              </span>
+              <span>{label}{extra && <> — {extra}</>}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Icons ────────────────────────────────────────────────────────────────────
+function WhatsAppIcon({ size = 22, color = 'white' }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill={color}>
+      <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347z" />
+      <path d="M12 0C5.373 0 0 5.373 0 12c0 2.123.554 4.118 1.528 5.845L.057 23.571a.75.75 0 00.918.919l5.733-1.472A11.952 11.952 0 0012 24c6.627 0 12-5.373 12-12S18.627 0 12 0zm0 22c-1.9 0-3.7-.503-5.257-1.39l-.374-.214-3.898 1.001.99-3.892-.228-.38A9.961 9.961 0 012 12C2 6.477 6.477 2 12 2s10 4.477 10 10-4.477 10-10 10z" />
+    </svg>
+  );
+}
+
+function FacebookIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="white">
+      <path d="M24 12.073C24 5.405 18.627 0 12 0S0 5.405 0 12.073c0 6.027 4.388 11.024 10.125 11.927v-8.437H7.078v-3.49h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.49h-2.796v8.437C19.612 23.097 24 18.1 24 12.073z" />
+    </svg>
+  );
+}

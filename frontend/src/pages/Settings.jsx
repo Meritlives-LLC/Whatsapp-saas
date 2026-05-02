@@ -45,24 +45,39 @@ export default function Settings() {
   ];
 
   return (
-    <div className="p-8">
-      <div className="flex items-center justify-between mb-6">
+    <div className="p-4 md:p-8">
+      <div className="flex items-center justify-between mb-5 md:mb-6">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Settings</h1>
-          <p className="text-sm text-gray-500 mt-1">Configure your business and AI behavior</p>
+          <h1 className="text-xl md:text-2xl font-bold text-gray-900">Settings</h1>
+          <p className="text-xs md:text-sm text-gray-500 mt-1">Configure your business and AI behavior</p>
         </div>
         <button onClick={save} disabled={saving}
-          className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all ${
+          className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold transition-all ${
             saved ? 'bg-green-500 text-white' : 'bg-gray-900 hover:bg-gray-700 text-white'
           } disabled:opacity-60`}>
           <Save size={15} />
-          {saved ? 'Saved!' : saving ? 'Saving...' : 'Save Changes'}
+          <span className="hidden sm:inline">{saved ? 'Saved!' : saving ? 'Saving...' : 'Save Changes'}</span>
+          <span className="sm:hidden">{saved ? '✓' : 'Save'}</span>
         </button>
       </div>
 
-      <div className="flex gap-6">
-        {/* Tabs */}
-        <div className="w-48 flex flex-col gap-1">
+      {/* On mobile: horizontal scrollable tab strip. On desktop: vertical sidebar */}
+      <div className="flex flex-col md:flex-row gap-4 md:gap-6">
+
+        {/* Mobile: scrollable tab bar */}
+        <div className="md:hidden flex gap-2 overflow-x-auto pb-1 -mx-4 px-4 scrollbar-none">
+          {tabs.map(({ id, label, icon: Icon }) => (
+            <button key={id} onClick={() => setTab(id)}
+              className={`flex items-center gap-2 px-3 py-2 rounded-xl text-sm font-medium whitespace-nowrap transition-all flex-shrink-0 ${
+                tab === id ? 'bg-green-50 text-green-700' : 'text-gray-500 bg-gray-100'
+              }`}>
+              <Icon size={15} /> {label}
+            </button>
+          ))}
+        </div>
+
+        {/* Desktop: vertical tabs */}
+        <div className="hidden md:flex w-48 flex-col gap-1 flex-shrink-0">
           {tabs.map(({ id, label, icon: Icon }) => (
             <button key={id} onClick={() => setTab(id)}
               className={`flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-sm font-medium transition-all ${
@@ -73,8 +88,8 @@ export default function Settings() {
           ))}
         </div>
 
-        <div className="flex-1 bg-white rounded-xl border border-gray-100 shadow-sm p-6">
-          {/* GENERAL */}
+        {/* Content panel */}
+        <div className="flex-1 bg-white rounded-xl border border-gray-100 shadow-sm p-4 md:p-6">
           {tab === 'general' && (
             <div className="space-y-4">
               <h3 className="font-semibold text-gray-900 mb-4">Business Information</h3>
@@ -85,7 +100,8 @@ export default function Settings() {
                 <textarea value={business.description || ''} onChange={e => update('description', e.target.value)}
                   rows={3} className={`${inputCls} resize-none`} />
               </Field>
-              <div className="grid grid-cols-2 gap-4">
+              {/* Stack on mobile, side by side on desktop */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <Field label="Phone"><input value={business.phone || ''} onChange={e => update('phone', e.target.value)} className={inputCls} /></Field>
                 <Field label="Email"><input value={business.email || ''} onChange={e => update('email', e.target.value)} className={inputCls} /></Field>
               </div>
@@ -93,7 +109,6 @@ export default function Settings() {
             </div>
           )}
 
-          {/* WHATSAPP */}
           {tab === 'whatsapp' && (
             <div className="space-y-4">
               <h3 className="font-semibold text-gray-900 mb-2">WhatsApp Cloud API</h3>
@@ -111,14 +126,13 @@ export default function Settings() {
               </Field>
               <div className="bg-gray-50 rounded-xl p-4 text-sm text-gray-600">
                 <p className="font-semibold mb-1">Webhook URL to set in Meta:</p>
-                <code className="text-xs bg-white border border-gray-200 px-2 py-1 rounded">
+                <code className="text-xs bg-white border border-gray-200 px-2 py-1 rounded break-all">
                   {window.location.origin}/api/webhook
                 </code>
               </div>
             </div>
           )}
 
-          {/* AI KNOWLEDGE */}
           {tab === 'ai' && (
             <div className="space-y-4">
               <h3 className="font-semibold text-gray-900 mb-2">AI Knowledge Base</h3>
@@ -141,7 +155,6 @@ export default function Settings() {
             </div>
           )}
 
-          {/* AUTOMATION */}
           {tab === 'automation' && (
             <div className="space-y-5">
               <h3 className="font-semibold text-gray-900 mb-4">Automation Settings</h3>
@@ -150,8 +163,8 @@ export default function Settings() {
                 { key: 'settings.autoFollowUp', label: 'Auto Follow-up', desc: 'Send follow-up messages to inactive conversations' },
                 { key: 'settings.leadCapture', label: 'Lead Capture', desc: 'Automatically detect and tag leads from conversations' },
               ].map(({ key, label, desc }) => (
-                <div key={key} className="flex items-center justify-between p-4 border border-gray-100 rounded-xl">
-                  <div>
+                <div key={key} className="flex items-center justify-between p-4 border border-gray-100 rounded-xl gap-4">
+                  <div className="min-w-0">
                     <p className="font-medium text-gray-900 text-sm">{label}</p>
                     <p className="text-xs text-gray-400 mt-0.5">{desc}</p>
                   </div>
@@ -184,8 +197,8 @@ const Field = ({ label, children }) => (
 
 const Toggle = ({ checked, onChange }) => (
   <button onClick={() => onChange(!checked)}
-    className={`w-11 h-6 rounded-full transition-colors relative ${checked ? 'bg-green-500' : 'bg-gray-200'}`}>
-    <span className={`absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition-all ${checked ? 'left-5.5' : 'left-0.5'}`}
+    className={`w-11 h-6 rounded-full transition-colors relative flex-shrink-0 ${checked ? 'bg-green-500' : 'bg-gray-200'}`}>
+    <span className={`absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition-all`}
       style={{ left: checked ? '1.375rem' : '0.125rem' }} />
   </button>
 );
