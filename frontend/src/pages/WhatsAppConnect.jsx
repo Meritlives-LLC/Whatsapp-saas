@@ -194,7 +194,7 @@ export default function WhatsAppConnect() {
             <div className="mt-8 text-left bg-gray-50 rounded-xl p-4 space-y-3">
               <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">What happens when you click:</p>
               {[
-                ['1', 'You're sent to Facebook / Meta'],
+                ['1', "You're sent to Facebook / Meta"],
                 ['2', 'Facebook asks: "Allow this app to access your WhatsApp Business account?"'],
                 ['3', 'You click Allow'],
                 ['4', 'Facebook gives us a secure token'],
