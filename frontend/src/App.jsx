@@ -1,6 +1,8 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
 
+import logo from "../assets/logo.svg";
+
 import Layout from './components/Layout';
 import AdminLayout from './components/AdminLayout';
 

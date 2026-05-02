@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Link, useParams, useNavigate } from 'react-router-dom';
 import { Zap, Eye, EyeOff, CheckCircle, XCircle } from 'lucide-react';
 import api from '../utils/api';
+import logo from '../assets/logo.svg';
 
 const Rule = ({ met, text }) => (
   <div className={`flex items-center gap-1.5 text-xs ${met ? 'text-green-600' : 'text-gray-400'}`}>
@@ -47,9 +48,11 @@ export default function ResetPassword() {
       <div className="w-full max-w-md">
         <div className="text-center mb-8">
           <div className="inline-flex items-center gap-2 mb-3">
-            <div className="w-10 h-10 bg-green-500 rounded-xl flex items-center justify-center shadow-lg">
-              <Zap size={22} className="text-white" />
-            </div>
+            <img
+              src={logo}
+              alt="WA AutoBot Logo"
+              className="w-10 h-10 object-contain"
+            />
             <span className="text-2xl font-bold text-gray-900">WA AutoBot</span>
           </div>
         </div>

@@ -5,6 +5,7 @@ import api from '../utils/api';
 import { useAuth } from '../context/AuthContext';
 import { formatDistanceToNow } from 'date-fns';
 
+
 const StatCard = ({ label, value, icon: Icon, color, change }) => (
   <div className="bg-white rounded-xl p-4 md:p-6 border border-gray-100 shadow-sm">
     <div className="flex items-start justify-between">

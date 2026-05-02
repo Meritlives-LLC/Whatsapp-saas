@@ -3,6 +3,16 @@ import { Users, DollarSign, MessageSquare, Zap, TrendingUp, AlertTriangle, UserC
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { formatDistanceToNow } from 'date-fns';
 import api from '../../utils/api';
+import logo from "../../assets/logo.svg";
+
+const LogoIcon = ({ size = 16 }) => (
+  <img
+    src={logo}
+    alt="logo"
+    style={{ width: size, height: size }}
+    className="object-contain"
+  />
+);
 
 const KPI = ({ label, value, sub, icon: Icon, color, dark }) => (
   <div className={`rounded-xl p-5 border ${dark ? 'bg-gray-900 border-gray-800' : 'bg-gray-900 border-gray-800'}`}>
@@ -51,9 +61,14 @@ export default function AdminOverview() {
 
   return (
     <div className="p-8">
-      <div className="mb-8">
-        <h1 className="text-2xl font-bold text-white">Platform Overview</h1>
-        <p className="text-sm text-gray-500 mt-1">Real-time stats across all businesses</p>
+      <div className="mb-8 flex items-center gap-3">
+        <img src={logo} alt="logo" className="w-8 h-8 object-contain" />
+        <div>
+          <h1 className="text-2xl font-bold text-white">Platform Overview</h1>
+          <p className="text-sm text-gray-500 mt-1">
+            Real-time stats across all businesses
+          </p>
+        </div>
       </div>
 
       {/* KPI Grid */}
@@ -63,7 +78,7 @@ export default function AdminOverview() {
         <KPI label="Monthly Recurring Revenue" value={`₦${(stats?.mrr || 0).toLocaleString()}`}
           sub="Active subscriptions" icon={DollarSign} color="bg-green-600" />
         <KPI label="Total AI replies sent" value={(stats?.totalAiReplies || 0).toLocaleString()}
-          icon={Zap} color="bg-purple-600" />
+          icon={LogoIcon} color="bg-purple-600" />
         <KPI label="Total conversations" value={(stats?.totalConversations || 0).toLocaleString()}
           icon={MessageSquare} color="bg-amber-600" />
       </div>

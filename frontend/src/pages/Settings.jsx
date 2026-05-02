@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Save, Bot, MessageSquare, Zap, Webhook } from 'lucide-react';
 import api from '../utils/api';
+import logo from '../assets/logo.svg';
 
 export default function Settings() {
   const [business, setBusiness] = useState(null);
@@ -24,6 +25,14 @@ export default function Settings() {
     });
   };
 
+  const LogoIcon = () => (
+    <img
+      src={logo}
+      alt="logo"
+      className="w-4 h-4 object-contain rounded-sm"
+    />
+  );
+
   const save = async () => {
     setSaving(true);
     try {
@@ -38,7 +47,7 @@ export default function Settings() {
   if (!business) return <div className="p-8 text-gray-400">Loading...</div>;
 
   const tabs = [
-    { id: 'general', label: 'General', icon: Zap },
+    { id: 'general', label: 'General', icon: LogoIcon },
     { id: 'whatsapp', label: 'WhatsApp', icon: MessageSquare },
     { id: 'ai', label: 'AI Knowledge', icon: Bot },
     { id: 'automation', label: 'Automation', icon: Webhook },

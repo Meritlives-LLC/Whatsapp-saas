@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import { Check, Zap, Star } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import api from '../utils/api';
+import logo from '../assets/logo.svg';
 
 const plans = [
   {
@@ -63,10 +64,11 @@ export default function Pricing() {
     <div className="min-h-screen bg-gray-50 font-sans py-10 md:py-16 px-4">
       <div className="max-w-5xl mx-auto">
         <div className="text-center mb-8 md:mb-12">
-          <div className="inline-flex items-center gap-2 bg-green-50 px-4 py-2 rounded-full mb-4">
-            <Zap size={14} className="text-green-600" />
-            <span className="text-sm text-green-700 font-medium">Simple, transparent pricing</span>
-          </div>
+          <img
+            src={logo}
+            alt="WA AutoBot Logo"
+            className="w-10 h-10 object-contain"
+          />
           <h1 className="text-3xl md:text-4xl font-bold text-gray-900 mb-3">Choose your plan</h1>
           <p className="text-gray-500 text-base md:text-lg">Start free. Upgrade when your business needs more.</p>
         </div>

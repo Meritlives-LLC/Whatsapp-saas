@@ -2,8 +2,9 @@
 import { useState, useEffect } from 'react';
 import { Check, Zap, TrendingUp, Crown, ArrowRight, AlertTriangle, XCircle, RefreshCw } from 'lucide-react';
 import api from '../utils/api';
+import logo from '../assets/logo.svg';
 
-const PLAN_ICONS = { free: Zap, starter: TrendingUp, growth: TrendingUp, pro: Crown };
+const PLAN_ICONS = { free: LogoIcon, starter: TrendingUp, growth: TrendingUp, pro: Crown };
 const PLAN_COLORS = {
   free:    { bg: 'bg-gray-50',    text: 'text-gray-700',   btn: 'bg-gray-800 hover:bg-gray-900',   badge: '' },
   starter: { bg: 'bg-blue-50',   text: 'text-blue-700',   btn: 'bg-blue-600 hover:bg-blue-700',   badge: '' },
@@ -206,7 +207,15 @@ export default function Subscription() {
           const plan = plans[planId];
           if (!plan) return null;
           const colors = PLAN_COLORS[planId];
-          const Icon = PLAN_ICONS[planId] || Zap;
+          const Icon = PLAN_ICONS[planId];
+
+          <div className={`w-9 h-9 rounded-xl flex items-center justify-center mb-3 ${colors.bg}`}>
+            {planId === 'free' ? (
+              <Icon />
+            ) : (
+              <Icon size={16} className={colors.text} />
+            )}
+          </div>
           const isCurrent = currentPlan === planId;
           const isUpgrade = planOrder.indexOf(planId) > planOrder.indexOf(currentPlan);
 

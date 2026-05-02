@@ -4,6 +4,7 @@ import { Zap, CheckCircle, AlertCircle, TrendingUp, Calendar, XCircle } from 'lu
 import api from '../utils/api';
 import { format } from 'date-fns';
 
+
 const planColors = {
   free: 'bg-gray-100 text-gray-700',
   starter: 'bg-blue-50 text-blue-700',

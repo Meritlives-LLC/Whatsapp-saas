@@ -7,6 +7,7 @@ import { useState, useEffect } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import api from "../utils/api";
+import logo from "../assets/logo.svg";
 
 const navItems = [
   { to: '/', icon: LayoutDashboard, label: 'Dashboard' },

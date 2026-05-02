@@ -2,15 +2,18 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Zap, ArrowLeft, Mail, Eye, EyeOff, CheckCircle } from 'lucide-react';
 import api from '../utils/api';
+import logo from '../assets/logo.svg';
 
 const Card = ({ children }) => (
   <div className="min-h-screen bg-gradient-to-br from-green-50 to-emerald-100 flex items-center justify-center p-4 font-sans">
     <div className="w-full max-w-md">
       <div className="text-center mb-8">
         <div className="inline-flex items-center gap-2 mb-3">
-          <div className="w-10 h-10 bg-green-500 rounded-xl flex items-center justify-center shadow-lg">
-            <Zap size={22} className="text-white" />
-          </div>
+          <img
+            src={logo}
+            alt="WA AutoBot Logo"
+            className="w-10 h-10 object-contain"
+          />
           <span className="text-2xl font-bold text-gray-900">WA AutoBot</span>
         </div>
       </div>

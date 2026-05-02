@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { Search, Filter, Eye, Ban, Trash2, Zap, Crown, TrendingUp, ChevronRight, X, Plus } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import api from '../../utils/api';
+import logo from "../../assets/logo.svg";
 
 const PLAN_BADGE = {
   free:    'bg-gray-800 text-gray-400',
@@ -10,7 +11,7 @@ const PLAN_BADGE = {
   pro:     'bg-purple-900 text-purple-300',
 };
 
-const PLAN_ICONS = { free: Zap, starter: TrendingUp, growth: TrendingUp, pro: Crown };
+const PLAN_ICONS = { free: LogoIcon, starter: TrendingUp, growth: TrendingUp, pro: Crown };
 
 // ── Business Detail Modal ────────────────────────────────────────────────────
 function BusinessModal({ userId, onClose, onRefresh }) {
@@ -295,7 +296,15 @@ export default function AdminBusinesses() {
               </td></tr>
             ) : businesses.map(biz => {
               const plan = biz.subscription?.plan || 'free';
-              const Icon = PLAN_ICONS[plan] || Zap;
+              const Icon = PLAN_ICONS[planId];
+
+              <div className={`w-9 h-9 rounded-xl flex items-center justify-center mb-3 ${colors.bg}`}>
+                {planId === 'free' ? (
+                  <Icon />
+                ) : (
+                  <Icon size={16} className={colors.text} />
+                )}
+              </div>
               const usage = biz.subscription?.usage?.aiRepliesCount || 0;
               const limit = biz.subscription?.limits?.aiRepliesPerMonth || 100;
               const pct = Math.min(100, Math.round((usage / limit) * 100));
