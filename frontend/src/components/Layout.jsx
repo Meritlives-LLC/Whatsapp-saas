@@ -58,8 +58,8 @@ export default function Layout({ children }) {
     <>
       <div className="px-6 py-5 border-b border-gray-100 flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <div className="w-8 h-8 bg-green-500 rounded-lg flex items-center justify-center">
-            <Zap size={18} className="text-white" />
+          <div className="w-8 h-8 rounded-lg overflow-hidden flex items-center justify-center">
+            <img src={logo} alt="logo" className="w-full h-full object-contain" />
           </div>
           <span className="font-bold text-gray-900 text-lg">WA AutoBot</span>
         </div>
@@ -144,8 +144,8 @@ export default function Layout({ children }) {
             <Menu size={20} />
           </button>
           <div className="flex items-center gap-2">
-            <div className="w-7 h-7 bg-green-500 rounded-lg flex items-center justify-center">
-              <Zap size={14} className="text-white" />
+            <div className="w-7 h-7 rounded-lg overflow-hidden flex items-center justify-center">
+              <img src={logo} alt="logo" className="w-full h-full object-contain" />
             </div>
             <span className="font-bold text-gray-900">WA AutoBot</span>
           </div>
