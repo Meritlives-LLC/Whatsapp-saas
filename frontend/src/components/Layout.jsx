@@ -9,6 +9,7 @@ import {
   Zap,
   BarChart2,
   Star,
+  Wifi,
   AlertTriangle,
   Shield
 } from "lucide-react";
@@ -25,6 +26,7 @@ const navItems = [
   { to: '/bookings', icon: Calendar, label: 'Bookings' },
   { to: '/payments', icon: CreditCard, label: 'Payments' },
   { to: '/analytics', icon: BarChart2, label: 'Analytics' },
+  { to: '/connect-whatsapp', icon: Wifi, label: 'Connect WhatsApp' },
   { to: '/subscription', icon: Star, label: 'Subscription' },
   { to: '/settings', icon: Settings, label: 'Settings' },
 ];
@@ -101,6 +103,9 @@ export default function Layout({ children }) {
                 <Icon size={18} />
                 {label}
 
+                {label === 'Connect WhatsApp' && !isConnected && (
+                  <span className="ml-auto w-2 h-2 rounded-full bg-amber-400 flex-shrink-0" />
+                )}
                 {label === "Subscription" && (atLimit || nearLimit) && (
                   <AlertTriangle
                     size={13}

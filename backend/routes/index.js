@@ -1,33 +1,31 @@
 const express = require('express');
-const router = express.Router();
+const router  = express.Router();
 const { protect, adminOnly } = require('../middlewares/auth');
 const { attachSubscription } = require('../middlewares/subscription');
 const {
-  globalLimiter, authLimiter, passwordResetLimiter,
-  webhookLimiter, checkActive
+  authLimiter, passwordResetLimiter, checkActive
 } = require('../middlewares/security');
 
 const authCtrl  = require('../controllers/authController');
-const webhookCtrl = require('../controllers/webhookController');
 const convCtrl  = require('../controllers/conversationController');
 const bizCtrl   = require('../controllers/businessController');
 const subCtrl   = require('../controllers/subscriptionController');
 const adminCtrl = require('../controllers/adminController');
 
-router.use(globalLimiter);
+// NOTE: /api/webhook GET and POST are registered directly in server.js
+// BEFORE all middleware so Meta's verification is never blocked.
+// Do NOT add webhook routes here.
 
 // ── AUTH ──────────────────────────────────────────────────────────────────────
-router.post('/auth/register',              authLimiter, authCtrl.register);
-router.post('/auth/login',                 authLimiter, authCtrl.login);
-router.post('/auth/refresh',               authCtrl.refreshToken);
-router.post('/auth/logout',                authCtrl.logout);
-router.get('/auth/me',                     protect, checkActive, authCtrl.getMe);
-router.post('/auth/forgot-password',       passwordResetLimiter, authCtrl.forgotPassword);
+router.post('/auth/register',               authLimiter, authCtrl.register);
+router.post('/auth/login',                  authLimiter, authCtrl.login);
+router.post('/auth/refresh',                authCtrl.refreshToken);
+router.post('/auth/logout',                 authCtrl.logout);
+router.get('/auth/me',                      protect, checkActive, authCtrl.getMe);
+router.post('/auth/forgot-password',        passwordResetLimiter, authCtrl.forgotPassword);
 router.patch('/auth/reset-password/:token', authCtrl.resetPassword);
 
-// ── WEBHOOKS (no auth — external services call these) ─────────────────────────
-router.get('/webhook',               webhookLimiter, webhookCtrl.verifyWebhook);
-router.post('/webhook',              webhookLimiter, webhookCtrl.receiveMessage);
+// ── PAYSTACK WEBHOOKS (raw body needed for signature check) ───────────────────
 router.post('/subscription/webhook', express.raw({ type: 'application/json' }), subCtrl.paystackWebhook);
 router.post('/payments/webhook',     express.raw({ type: 'application/json' }), bizCtrl.paystackWebhook);
 
@@ -60,12 +58,12 @@ router.get('/appointments',       protect, checkActive, bizCtrl.getAppointments)
 router.patch('/appointments/:id', protect, checkActive, bizCtrl.updateAppointment);
 
 // ── PAYMENTS ──────────────────────────────────────────────────────────────────
-router.post('/payments/create-link',  protect, checkActive, bizCtrl.createPaymentLink);
-router.get('/payments/transactions',  protect, checkActive, bizCtrl.getTransactions);
-router.get('/payments/banks',         protect, checkActive, bizCtrl.getBanks);
-router.get('/payments/verify-account',protect, checkActive, bizCtrl.verifyBankAccount);
-router.get('/payments/bank-accounts', protect, checkActive, bizCtrl.getBankAccounts);
-router.post('/payments/bank-accounts',protect, checkActive, bizCtrl.saveBankAccount);
+router.post('/payments/create-link',         protect, checkActive, bizCtrl.createPaymentLink);
+router.get('/payments/transactions',         protect, checkActive, bizCtrl.getTransactions);
+router.get('/payments/banks',                protect, checkActive, bizCtrl.getBanks);
+router.get('/payments/verify-account',       protect, checkActive, bizCtrl.verifyBankAccount);
+router.get('/payments/bank-accounts',        protect, checkActive, bizCtrl.getBankAccounts);
+router.post('/payments/bank-accounts',       protect, checkActive, bizCtrl.saveBankAccount);
 router.delete('/payments/bank-accounts/:id', protect, checkActive, bizCtrl.deleteBankAccount);
 
 // ── ANALYTICS ─────────────────────────────────────────────────────────────────
