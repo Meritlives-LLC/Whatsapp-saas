@@ -13,6 +13,15 @@ const GRAPH_URL = `https://graph.facebook.com/${META_API_VERSION}`;
 // Frontend hits GET /api/meta/oauth-url?state=<jwt_user_id>
 // We return the URL; frontend does window.location.href = url
 exports.getOAuthUrl = (req, res) => {
+
+  // ✅ ADD THIS FIRST (BEFORE ANYTHING ELSE)
+  if (!req.user) {
+    return res.status(401).json({
+      success: false,
+      message: 'Unauthorized'
+    });
+  }
+
   const { META_APP_ID, FRONTEND_URL, BACKEND_URL } = process.env;
 
   if (!META_APP_ID) {
@@ -22,7 +31,6 @@ exports.getOAuthUrl = (req, res) => {
     });
   }
 
-  // state = base64(userId:randomNonce) — prevents CSRF
   const nonce = crypto.randomBytes(16).toString('hex');
   const statePayload = Buffer.from(`${req.user._id}:${nonce}`).toString('base64url');
 
@@ -42,8 +50,7 @@ exports.getOAuthUrl = (req, res) => {
 
   const oauthUrl = `https://www.facebook.com/dialog/oauth?${params.toString()}`;
 
-  logger.info(`Meta OAuth URL generated for user ${req.user._id}`);
-  res.json({ success: true, url: oauthUrl, state: statePayload });
+  return res.json({ success: true, url: oauthUrl, state: statePayload });
 };
 
 // ── Step 2: Meta redirects back here with ?code=xxx&state=xxx ─────────────────
@@ -124,6 +131,8 @@ exports.oauthCallback = async (req, res) => {
         }
       }
     }
+
+    
 
     if (phoneNumbers.length === 0) {
       // No WhatsApp numbers found — redirect with error
