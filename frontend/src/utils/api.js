@@ -16,7 +16,13 @@ const processQueue = (error, token = null) => {
 // Attach access token
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem('token');
-  if (token) config.headers.Authorization = `Bearer ${token}`;
+  if (token) {
+    if (config.headers.set) {
+      config.headers.set('Authorization', `Bearer ${token}`);
+    } else {
+      config.headers.Authorization = `Bearer ${token}`;
+    }
+  }
   return config;
 });
 
@@ -37,7 +43,11 @@ api.interceptors.response.use(
         return new Promise((resolve, reject) => {
           failedQueue.push({ resolve, reject });
         }).then(token => {
-          original.headers.Authorization = `Bearer ${token}`;
+          if (original.headers.set) {
+            original.headers.set('Authorization', `Bearer ${token}`);
+          } else {
+            original.headers.Authorization = `Bearer ${token}`;
+          }
           return api(original);
         }).catch(e => Promise.reject(e));
       }
@@ -46,12 +56,27 @@ api.interceptors.response.use(
       isRefreshing = true;
 
       try {
-        const { data } = await axios.post('/api/auth/refresh', {}, { withCredentials: true });
+        const refreshUrl = (import.meta.env.VITE_API_URL || '/api') + '/auth/refresh';
+        const { data } = await axios.post(refreshUrl, {}, { withCredentials: true });
         const { token } = data;
+
         localStorage.setItem('token', token);
-        api.defaults.headers.Authorization = `Bearer ${token}`;
+        
+        // Update both defaults and the current failed request
+        if (api.defaults.headers.common.set) {
+          api.defaults.headers.common.set('Authorization', `Bearer ${token}`);
+        } else {
+          api.defaults.headers.common['Authorization'] = `Bearer ${token}`;
+        }
+
         processQueue(null, token);
-        original.headers.Authorization = `Bearer ${token}`;
+
+        if (original.headers.set) {
+          original.headers.set('Authorization', `Bearer ${token}`);
+        } else {
+          original.headers.Authorization = `Bearer ${token}`;
+        }
+
         return api(original);
       } catch (refreshErr) {
         processQueue(refreshErr, null);

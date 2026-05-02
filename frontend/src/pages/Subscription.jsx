@@ -213,13 +213,6 @@ export default function Subscription() {
           const colors = PLAN_COLORS[planId];
           const Icon = PLAN_ICONS[planId];
 
-          <div className={`w-9 h-9 rounded-xl flex items-center justify-center mb-3 ${colors.bg}`}>
-            {planId === 'free' ? (
-              <Icon />
-            ) : (
-              <Icon size={16} className={colors.text} />
-            )}
-          </div>
           const isCurrent = currentPlan === planId;
           const isUpgrade = planOrder.indexOf(planId) > planOrder.indexOf(currentPlan);
 
