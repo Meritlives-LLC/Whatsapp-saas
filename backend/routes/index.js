@@ -1,3 +1,4 @@
+const metaRoutes = require('./metaRoutes');
 const express = require('express');
 const router  = express.Router();
 const { protect, adminOnly } = require('../middlewares/auth');
@@ -12,6 +13,7 @@ const bizCtrl   = require('../controllers/businessController');
 const subCtrl   = require('../controllers/subscriptionController');
 const adminCtrl = require('../controllers/adminController');
 
+
 // NOTE: /api/webhook GET and POST are registered directly in server.js
 // BEFORE all middleware so Meta's verification is never blocked.
 // Do NOT add webhook routes here.
@@ -24,6 +26,8 @@ router.post('/auth/logout',                 authCtrl.logout);
 router.get('/auth/me',                      protect, checkActive, authCtrl.getMe);
 router.post('/auth/forgot-password',        passwordResetLimiter, authCtrl.forgotPassword);
 router.patch('/auth/reset-password/:token', authCtrl.resetPassword);
+
+router.use('/meta', metaRoutes);
 
 // ── PAYSTACK WEBHOOKS (raw body needed for signature check) ───────────────────
 router.post('/subscription/webhook', express.raw({ type: 'application/json' }), subCtrl.paystackWebhook);
