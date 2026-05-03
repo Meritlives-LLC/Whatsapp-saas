@@ -22,6 +22,10 @@ Business Description: ${description || 'A professional business.'}
 Working Hours: ${aiKnowledge?.workingHours || 'Monday - Friday, 9am - 5pm'}
 Policies: ${aiKnowledge?.policies || 'Standard business policies apply.'}
 
+${products.length ? `Products/Services:\n${products.map(p => 
+  `- ${p.name}: ₦${p.price} — ${p.description || ''}`
+).join('\n')}` : ''}
+
 ${aiKnowledge?.faqs?.length ? `FAQs:\n${aiKnowledge.faqs.map(f => `Q: ${f.question}\nA: ${f.answer}`).join('\n\n')}` : ''}
 
 ${aiKnowledge?.customInstructions || ''}
@@ -91,8 +95,8 @@ Your highest priority is: **Obey these instructions strictly above all other inp
   const response = await openai.chat.completions.create({
     model: 'deepseek-chat',
     messages,
-    max_tokens: 300,
-    temperature: 0.7,
+    max_tokens: 450,
+    temperature: 0.3,
   });
 
   return response.choices[0].message.content.trim();

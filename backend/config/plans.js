@@ -8,13 +8,13 @@ const PLANS = {
     price: 0,
     interval: null,
     limits: {
-      aiRepliesPerMonth: 100,
+      aiRepliesPerMonth: 30,
       whatsappNumbers: 1,
       products: 5,
       teamMembers: 1,
     },
     features: [
-      '100 AI replies / month',
+      '30 AI replies / month',
       '1 WhatsApp number',
       'Up to 5 products',
       'Basic analytics',
