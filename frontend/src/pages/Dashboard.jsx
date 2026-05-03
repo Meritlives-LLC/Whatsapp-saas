@@ -1,10 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { MessageSquare, Users, TrendingUp, DollarSign, CheckCircle, Clock, ArrowUpRight } from 'lucide-react';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import api from '../utils/api';
 import { useAuth } from '../context/AuthContext';
 import { formatDistanceToNow } from 'date-fns';
-
 
 const StatCard = ({ label, value, icon: Icon, color, change }) => (
   <div className="bg-white rounded-xl p-4 md:p-6 border border-gray-100 shadow-sm">
@@ -46,11 +45,38 @@ export default function Dashboard() {
   const stats = analytics?.conversations || {};
   const revenue = analytics?.revenue || {};
 
+  const getGreeting = useCallback(() => {
+    const h = new Date().getHours();
+    if (h < 12) return { text: 'Good morning', emoji: '🌅' };
+    if (h < 17) return { text: 'Good afternoon', emoji: '☀️' };
+    if (h < 21) return { text: 'Good evening', emoji: '🌆' };
+    return { text: 'Good night', emoji: '🌙' };
+  }, []);
+
+  const [greeting, setGreeting] = useState(getGreeting);
+  const [clock, setClock] = useState(new Date());
+
+  useEffect(() => {
+    const tick = setInterval(() => {
+      setClock(new Date());
+      setGreeting(getGreeting());
+    }, 1000);
+    return () => clearInterval(tick);
+  }, [getGreeting]);
+
+  const timeString = clock.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const dateString = clock.toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' });
+  const firstName = business?.name?.split(' ')[0] || 'there';
+
   return (
     <div className="p-4 md:p-8">
       <div className="mb-6 md:mb-8">
-        <h1 className="text-xl md:text-2xl font-bold text-gray-900">Good morning! 👋</h1>
-        <p className="text-gray-500 text-sm mt-1">{business?.name} — Dashboard overview</p>
+        <h1 className="text-xl md:text-2xl font-bold text-gray-900">
+          {greeting.text}, {firstName}! {greeting.emoji}
+        </h1>
+        <p className="text-gray-400 text-sm mt-0.5 font-mono tabular-nums">
+          {dateString} · {timeString}
+        </p>
       </div>
 
       {/* Stats — 2 cols on mobile, 4 on desktop */}
