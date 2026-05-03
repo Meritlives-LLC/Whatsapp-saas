@@ -24,8 +24,23 @@ import AdminRevenue from './pages/admin/AdminRevenue';
 import AdminSettings from './pages/admin/AdminSettings';
 
 const Spinner = () => (
-  <div className="min-h-screen flex items-center justify-center bg-gray-50">
-    <div className="w-8 h-8 border-2 border-green-500 border-t-transparent rounded-full animate-spin" />
+  <div className="min-h-screen flex items-center justify-center bg-white">
+    <style>{`
+      @keyframes wa-pulse {
+        0%   { transform: scale(0.85); opacity: 0.7; }
+        50%  { transform: scale(1.05); opacity: 1; }
+        100% { transform: scale(0.85); opacity: 0.7; }
+      }
+      .wa-logo-pulse {
+        animation: wa-pulse 1.4s ease-in-out infinite;
+      }
+    `}</style>
+    <img
+      src={logo}
+      alt="Loading..."
+      className="wa-logo-pulse"
+      style={{ width: 90, height: 90 }}
+    />
   </div>
 );
 
