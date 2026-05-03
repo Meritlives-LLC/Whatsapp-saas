@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState } from 'react';
 import { MessageSquare, Users, TrendingUp, DollarSign, CheckCircle, Clock, ArrowUpRight } from 'lucide-react';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import api from '../utils/api';
@@ -27,15 +27,42 @@ const chartData = [
   { day: 'Sun', messages: 14 },
 ];
 
+const getGreeting = () => {
+  const h = new Date().getHours();
+  if (h < 12) return { text: 'Good morning', emoji: '🌅' };
+  if (h < 17) return { text: 'Good afternoon', emoji: '☀️' };
+  if (h < 21) return { text: 'Good evening', emoji: '🌆' };
+  return { text: 'Good night', emoji: '🌙' };
+};
+
 export default function Dashboard() {
   const [analytics, setAnalytics] = useState(null);
   const [loading, setLoading] = useState(true);
   const { business } = useAuth();
 
+  // ALL hooks at the top — before any early return
+  const [greeting, setGreeting] = useState(getGreeting);
+  const [clock, setClock] = useState(() => new Date());
+
   useEffect(() => {
-    api.get('/analytics').then(({ data }) => setAnalytics(data.data)).finally(() => setLoading(false));
+    api.get('/analytics')
+      .then(({ data }) => setAnalytics(data.data))
+      .finally(() => setLoading(false));
   }, []);
 
+  useEffect(() => {
+    const tick = setInterval(() => {
+      setClock(new Date());
+      setGreeting(getGreeting());
+    }, 1000);
+    return () => clearInterval(tick);
+  }, []);
+
+  const timeString = clock.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const dateString = clock.toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' });
+  const firstName = business?.name?.split(' ')[0] || 'there';
+
+  // Early return AFTER all hooks
   if (loading) return (
     <div className="p-8 flex items-center justify-center h-full">
       <div className="w-8 h-8 border-2 border-green-500 border-t-transparent rounded-full animate-spin" />
@@ -44,29 +71,6 @@ export default function Dashboard() {
 
   const stats = analytics?.conversations || {};
   const revenue = analytics?.revenue || {};
-
-  const getGreeting = useCallback(() => {
-    const h = new Date().getHours();
-    if (h < 12) return { text: 'Good morning', emoji: '🌅' };
-    if (h < 17) return { text: 'Good afternoon', emoji: '☀️' };
-    if (h < 21) return { text: 'Good evening', emoji: '🌆' };
-    return { text: 'Good night', emoji: '🌙' };
-  }, []);
-
-  const [greeting, setGreeting] = useState(getGreeting);
-  const [clock, setClock] = useState(new Date());
-
-  useEffect(() => {
-    const tick = setInterval(() => {
-      setClock(new Date());
-      setGreeting(getGreeting());
-    }, 1000);
-    return () => clearInterval(tick);
-  }, [getGreeting]);
-
-  const timeString = clock.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-  const dateString = clock.toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' });
-  const firstName = business?.name?.split(' ')[0] || 'there';
 
   return (
     <div className="p-4 md:p-8">
@@ -79,7 +83,6 @@ export default function Dashboard() {
         </p>
       </div>
 
-      {/* Stats — 2 cols on mobile, 4 on desktop */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4 mb-6 md:mb-8">
         <StatCard label="Total Conversations" value={stats.total || 0} icon={MessageSquare} color="bg-blue-500" />
         <StatCard label="Active Leads" value={stats.leads || 0} icon={Users} color="bg-purple-500" />
@@ -87,9 +90,7 @@ export default function Dashboard() {
         <StatCard label="Revenue (NGN)" value={`₦${(revenue.total || 0).toLocaleString()}`} icon={DollarSign} color="bg-amber-500" />
       </div>
 
-      {/* Chart + Recent — stacked on mobile */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-6">
-        {/* Chart — full width on mobile */}
         <div className="md:col-span-2 bg-white rounded-xl p-4 md:p-6 border border-gray-100 shadow-sm">
           <h3 className="font-semibold text-gray-900 mb-4">Messages This Week</h3>
           <ResponsiveContainer width="100%" height={180}>
@@ -109,7 +110,6 @@ export default function Dashboard() {
           </ResponsiveContainer>
         </div>
 
-        {/* Recent conversations */}
         <div className="bg-white rounded-xl p-4 md:p-6 border border-gray-100 shadow-sm">
           <h3 className="font-semibold text-gray-900 mb-4">Recent Chats</h3>
           <div className="space-y-3">
@@ -138,7 +138,6 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Quick status — 3 cols on mobile too, smaller padding */}
       <div className="mt-4 md:mt-6 grid grid-cols-3 gap-3 md:gap-4">
         {[
           { label: 'Open', value: stats.open || 0, icon: Clock, color: 'text-blue-600 bg-blue-50' },
