@@ -1,12 +1,11 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
 
-import logo from "./assets/logo.svg";
-
 import Layout from './components/Layout';
 import AdminLayout from './components/AdminLayout';
 
 import AuthPage from './pages/AuthPage';
+import LandingPage from './pages/LandingPage';
 import { ForgotPassword, ResetPassword } from './pages/PasswordPages';
 
 import Dashboard from './pages/Dashboard';
@@ -24,23 +23,8 @@ import AdminRevenue from './pages/admin/AdminRevenue';
 import AdminSettings from './pages/admin/AdminSettings';
 
 const Spinner = () => (
-  <div className="min-h-screen flex items-center justify-center bg-white">
-    <style>{`
-      @keyframes wa-pulse {
-        0%   { transform: scale(0.85); opacity: 0.7; }
-        50%  { transform: scale(1.05); opacity: 1; }
-        100% { transform: scale(0.85); opacity: 0.7; }
-      }
-      .wa-logo-pulse {
-        animation: wa-pulse 1.4s ease-in-out infinite;
-      }
-    `}</style>
-    <img
-      src={logo}
-      alt="Loading..."
-      className="wa-logo-pulse"
-      style={{ width: 90, height: 90 }}
-    />
+  <div className="min-h-screen flex items-center justify-center bg-gray-50">
+    <div className="w-8 h-8 border-2 border-green-500 border-t-transparent rounded-full animate-spin" />
   </div>
 );
 
@@ -66,6 +50,9 @@ function AppRoutes() {
   const { user } = useAuth();
   return (
     <Routes>
+      {/* Landing page — public */}
+      <Route path="/home" element={user ? <Navigate to="/" replace /> : <LandingPage />} />
+
       {/* Public */}
       <Route path="/login"           element={user ? <Navigate to="/" replace /> : <AuthPage />} />
       <Route path="/forgot-password" element={<ForgotPassword />} />
@@ -77,8 +64,8 @@ function AppRoutes() {
       <Route path="/admin/revenue"     element={<AdminRoute><AdminLayout><AdminRevenue /></AdminLayout></AdminRoute>} />
       <Route path="/admin/settings"    element={<AdminRoute><AdminLayout><AdminSettings /></AdminLayout></AdminRoute>} />
 
-      {/* Business dashboard */}
-      <Route path="/"                element={<PrivateRoute><Layout><Dashboard /></Layout></PrivateRoute>} />
+      {/* Business dashboard — logged in users see dashboard, guests see landing */}
+      <Route path="/" element={user ? <PrivateRoute><Layout><Dashboard /></Layout></PrivateRoute> : <LandingPage />} />
       <Route path="/conversations"   element={<PrivateRoute><Layout><Conversations /></Layout></PrivateRoute>} />
       <Route path="/products"        element={<PrivateRoute><Layout><Products /></Layout></PrivateRoute>} />
       <Route path="/bookings"        element={<PrivateRoute><Layout><Bookings /></Layout></PrivateRoute>} />
