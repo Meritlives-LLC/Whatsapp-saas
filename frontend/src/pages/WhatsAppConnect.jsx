@@ -6,7 +6,7 @@ import {
 } from 'lucide-react';
 import api from '../utils/api';
 
-const HAS_META_APP = !!import.meta.env.VITE_META_APP_ID;
+const HAS_META_APP = !!import.meta.env.META_APP_ID;
 
 export default function WhatsAppConnect() {
   const [status, setStatus]                 = useState('idle');
