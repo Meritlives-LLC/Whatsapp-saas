@@ -24,7 +24,7 @@ const Logo = () => (
         width: 24,
         height: 24,
         objectFit: 'contain',
-        filter: 'brightness(0) invert(1)', // makes SVG white
+        filter: 'drop-shadow(0 2px 4px rgba(0,0,0,0.3))', // makes SVG white
       }}
     />
   </div>
