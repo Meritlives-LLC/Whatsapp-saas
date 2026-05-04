@@ -3,11 +3,31 @@ import { useNavigate } from 'react-router-dom';
 import logo from '../assets/logo.svg';
 
 const Logo = () => (
-  <img
-    src={logo}
-    alt="WA AutoBot"
-    style={{ width: 36, height: 36, objectFit: 'contain' }}
-  />
+  <div
+    style={{
+      width: 42,
+      height: 42,
+      borderRadius: '50%',
+      background: 'linear-gradient(135deg, #22c55e, #16a34a)',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      boxShadow: '0 8px 20px rgba(34,197,94,0.35)',
+      border: '1px solid rgba(255,255,255,0.1)',
+      flexShrink: 0,
+    }}
+  >
+    <img
+      src={logo}
+      alt="WA AutoBot"
+      style={{
+        width: 24,
+        height: 24,
+        objectFit: 'contain',
+        filter: 'brightness(0) invert(1)', // makes SVG white
+      }}
+    />
+  </div>
 );
 
 const FEATURES = [
