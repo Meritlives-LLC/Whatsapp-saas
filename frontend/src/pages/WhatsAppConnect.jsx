@@ -142,7 +142,7 @@ export default function WhatsAppConnect() {
           <WhatsAppIcon />
         </div>
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Connect WhatsApp</h1>
+          <h1 className="text-2xl font-bold text-gray-900">Start AI Automation</h1>
           <p className="text-sm text-gray-500">Link your WhatsApp Business number via Facebook Login</p>
         </div>
       </div>
