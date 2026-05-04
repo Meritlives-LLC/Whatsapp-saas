@@ -5,7 +5,7 @@ import Layout from './components/Layout';
 import AdminLayout from './components/AdminLayout';
 
 import AuthPage from './pages/AuthPage';
-import LandingPage from './pages/LandingPage.';
+import LandingPage from './pages/LandingPage';
 import { ForgotPassword, ResetPassword } from './pages/PasswordPages';
 
 import Dashboard from './pages/Dashboard';
