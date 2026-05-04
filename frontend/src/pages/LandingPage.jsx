@@ -1,5 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import logo from '../assets/logo.svg';
+
+const Logo = () => (
+  <img
+    src={logo}
+    alt="WA AutoBot"
+    style={{ width: 36, height: 36, objectFit: 'contain' }}
+  />
+);
 
 const FEATURES = [
   {
@@ -267,11 +276,7 @@ export default function LandingPage() {
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <div style={{
-            width: 36, height: 36, background: '#22c55e', borderRadius: 10,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            fontSize: 18,
-          }}>⚡</div>
+          <Logo />
           <span style={{ fontWeight: 700, fontSize: 18, letterSpacing: '-0.3px' }}>WA AutoBot</span>
         </div>
 
@@ -801,10 +806,7 @@ export default function LandingPage() {
         flexWrap: 'wrap', gap: 16,
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <div style={{
-            width: 32, height: 32, background: '#22c55e', borderRadius: 8,
-            display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16,
-          }}>⚡</div>
+         <Logo />
           <span style={{ fontWeight: 700 }}>WA AutoBot</span>
           <span style={{ color: 'rgba(255,255,255,0.2)', fontSize: 13 }}>© 2025</span>
         </div>
