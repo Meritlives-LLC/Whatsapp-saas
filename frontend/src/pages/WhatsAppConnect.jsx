@@ -10,7 +10,8 @@ import {
 import api from '../utils/api';
 
 // ─── Config ───────────────────────────────────────────────────────────────────
-const HAS_META_APP = !!import.meta.env.VITE_META_APP_ID;   // set in .env.local
+const HAS_META_APP    = !!import.meta.env.VITE_META_APP_ID;   // set in .env.local
+const META_CONFIG_ID  = import.meta.env.VITE_META_CONFIG_ID || '';  // Embedded Signup config
 
 // ─── Main component ───────────────────────────────────────────────────────────
 export default function WhatsAppConnect() {
@@ -88,8 +89,37 @@ export default function WhatsAppConnect() {
   }, []);
 
   // ── Kick off Meta OAuth ──────────────────────────────────────────────────────
+  // If VITE_META_CONFIG_ID is set AND the FB SDK has loaded, open the
+  // Embedded Signup popup (better UX for non-technical users).
+  // Otherwise fall back to the standard OAuth redirect.
   const startOAuth = async () => {
     setOauthLoading(true);
+
+    // ── Embedded Signup popup path ──
+    if (META_CONFIG_ID && window.FB) {
+      window.FB.login(
+        (response) => {
+          if (response.authResponse) {
+            // Hand the code / token off to the backend via the same callback URL
+            window.location.href =
+              `/api/meta/oauth-callback?code=${encodeURIComponent(response.authResponse.code || '')}&state=embedded`;
+          } else {
+            setStatus('error');
+            setErrorMsg('You declined the permission request on Facebook.');
+            setOauthLoading(false);
+          }
+        },
+        {
+          config_id: META_CONFIG_ID,
+          response_type: 'code',
+          override_default_response_type: true,
+          extras: { setup: {}, sessionInfoVersion: 2 },
+        },
+      );
+      return; // popup handles the rest
+    }
+
+    // ── Standard OAuth redirect path (no config_id or FB SDK not ready) ──
     try {
       const { data } = await api.get('/meta/oauth-url');
       // Redirect the whole page to Meta — user will come back to /whatsapp-connect
@@ -100,6 +130,28 @@ export default function WhatsAppConnect() {
       setOauthLoading(false);
     }
   };
+
+  // ── Load the Facebook JS SDK when config_id is available ────────────────────
+  useEffect(() => {
+    if (!META_CONFIG_ID) return;
+    if (document.getElementById('facebook-jssdk')) return;
+
+    window.fbAsyncInit = function () {
+      window.FB.init({
+        appId: import.meta.env.VITE_META_APP_ID,
+        autoLogAppEvents: true,
+        xfbml: true,
+        version: 'v21.0',
+      });
+    };
+
+    const script = document.createElement('script');
+    script.id = 'facebook-jssdk';
+    script.src = 'https://connect.facebook.net/en_US/sdk.js';
+    script.async = true;
+    script.defer = true;
+    document.body.appendChild(script);
+  }, []);
 
   // ── User picks one phone from the list ──────────────────────────────────────
   const selectPhone = async (phone) => {
@@ -193,13 +245,19 @@ export default function WhatsAppConnect() {
             {/* What happens explainer */}
             <div className="mt-8 text-left bg-gray-50 rounded-xl p-4 space-y-3">
               <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">What happens when you click:</p>
-              {[
+              {(META_CONFIG_ID ? [
+                ['1', 'A Facebook popup opens — no page redirect'],
+                ['2', 'Facebook walks you through linking your WhatsApp Business account step-by-step'],
+                ['3', 'You grant the requested permissions'],
+                ['4', 'Facebook gives us a secure token'],
+                ['5', 'The popup closes — WhatsApp is connected ✓'],
+              ] : [
                 ['1', "You're sent to Facebook / Meta"],
                 ['2', 'Facebook asks: "Allow this app to access your WhatsApp Business account?"'],
                 ['3', 'You click Allow'],
                 ['4', 'Facebook gives us a secure token'],
                 ['5', 'We save it — WhatsApp is connected ✓'],
-              ].map(([n, text]) => (
+              ]).map(([n, text]) => (
                 <div key={n} className="flex gap-3 items-start">
                   <span className="w-5 h-5 bg-white border border-gray-200 rounded-full flex items-center justify-center text-xs font-bold text-gray-500 flex-shrink-0">{n}</span>
                   <span className="text-sm text-gray-600">{text}</span>

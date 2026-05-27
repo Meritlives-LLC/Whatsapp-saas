@@ -22,7 +22,7 @@ exports.getOAuthUrl = (req, res) => {
     });
   }
 
-  const { META_APP_ID, FRONTEND_URL, BACKEND_URL } = process.env;
+  const { META_APP_ID, META_CONFIG_ID, FRONTEND_URL, BACKEND_URL } = process.env;
 
   if (!META_APP_ID) {
     return res.status(500).json({
@@ -36,7 +36,7 @@ exports.getOAuthUrl = (req, res) => {
 
   const redirectUri = `${BACKEND_URL}/api/meta/oauth-callback`;
 
-  const params = new URLSearchParams({
+  const oauthParams = {
     client_id: META_APP_ID,
     redirect_uri: redirectUri,
     scope: [
@@ -46,7 +46,17 @@ exports.getOAuthUrl = (req, res) => {
     ].join(','),
     response_type: 'code',
     state: statePayload,
-  });
+  };
+
+  // If META_CONFIG_ID is set, use the Embedded Signup flow.
+  // This gives non-technical users a guided in-app experience instead of
+  // a raw OAuth redirect.  The config_id tells Meta which login
+  // configuration (permissions, UI customisation) to use.
+  if (META_CONFIG_ID) {
+    oauthParams.config_id = META_CONFIG_ID;
+  }
+
+  const params = new URLSearchParams(oauthParams);
 
   const oauthUrl = `https://www.facebook.com/dialog/oauth?${params.toString()}`;
 
