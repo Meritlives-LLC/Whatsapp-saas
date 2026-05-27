@@ -1,6 +1,6 @@
 const axios = require('axios');
 
-const BASE_URL = 'https://graph.facebook.com/v18.0';
+const BASE_URL = 'https://graph.facebook.com/v21.0';
 
 /**
  * Send a text message via WhatsApp Cloud API

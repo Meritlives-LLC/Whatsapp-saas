@@ -10,7 +10,7 @@ const User = require('../models/User');
 const verifyToken = async (phoneNumberId, accessToken) => {
   try {
     const res = await axios.get(
-      `https://graph.facebook.com/v18.0/${phoneNumberId}`,
+      `https://graph.facebook.com/v21.0/${phoneNumberId}`,
       { headers: { Authorization: `Bearer ${accessToken}` } }
     );
     return { valid: true, data: res.data };

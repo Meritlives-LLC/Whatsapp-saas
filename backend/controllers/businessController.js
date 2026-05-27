@@ -4,6 +4,8 @@ const Conversation = require('../models/Conversation');
 const paystackService = require('../services/paystackService');
 const emailService = require('../services/emailService');
 const logger = require('../config/logger');
+const Subscription = require('../models/Subscription');
+const { getPlan } = require('../config/plans');
 
 // ─── BUSINESS ────────────────────────────────────────────────────────────────
 exports.getBusiness = async (req, res) => {
@@ -17,9 +19,19 @@ exports.getBusiness = async (req, res) => {
 
 exports.updateBusiness = async (req, res) => {
   try {
+    // Whitelist: only allow safe fields. Never let users touch owner, isActive, or WhatsApp tokens here.
+    const ALLOWED = [
+      'name', 'description', 'phone', 'email', 'website', 'industry',
+      'aiKnowledge', 'settings',
+      'whatsappPhoneNumberId', 'whatsappAccessToken', 'whatsappVerifyToken',
+    ];
+    const update = {};
+    for (const key of ALLOWED) {
+      if (req.body[key] !== undefined) update[key] = req.body[key];
+    }
     const business = await Business.findByIdAndUpdate(
       req.user.business._id,
-      { $set: req.body },
+      { $set: update },
       { new: true, runValidators: true }
     );
     res.json({ success: true, data: business });
@@ -40,6 +52,17 @@ exports.getProducts = async (req, res) => {
 
 exports.createProduct = async (req, res) => {
   try {
+    // Enforce plan product limit
+    const sub = await Subscription.findOne({ business: req.user.business._id });
+    const plan = getPlan(sub?.plan || 'free');
+    const productCount = await Product.countDocuments({ business: req.user.business._id });
+    if (productCount >= plan.limits.products) {
+      return res.status(403).json({
+        success: false,
+        message: `Your ${plan.name} plan allows up to ${plan.limits.products} products. Upgrade to add more.`,
+        upgradeRequired: true,
+      });
+    }
     const product = await Product.create({ ...req.body, business: req.user.business._id });
     res.status(201).json({ success: true, data: product });
   } catch (err) {

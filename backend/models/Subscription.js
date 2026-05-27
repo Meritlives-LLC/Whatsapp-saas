@@ -17,8 +17,12 @@ const subscriptionSchema = new mongoose.Schema({
 
   // Usage tracking (resets monthly)
   usage: {
-    aiRepliesCount: { type: Number, default: 0 },
-    usagePeriodStart: { type: Date, default: Date.now },
+    aiRepliesCount:   { type: Number,  default: 0 },
+    usagePeriodStart: { type: Date,    default: Date.now },
+    // resetAt is used by the cron job to know when to reset the counter
+    resetAt:          { type: Date,    default: () => new Date(new Date().getFullYear(), new Date().getMonth() + 1, 1) },
+    // Prevent the 80% warning email from firing on every cron run
+    warningEmailSent: { type: Boolean, default: false },
   },
 
   // Billing history reference

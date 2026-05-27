@@ -60,7 +60,7 @@ exports.receiveMessage = async (req, res) => {
     }
     if (subscription.resetUsageIfNeeded) await subscription.resetUsageIfNeeded();
 
-    const limitCheck = checkAiLimit ? checkAiLimit(business, subscription) : { allowed: true };
+    const limitCheck = await checkAiLimit(business, subscription);
     if (limitCheck && !limitCheck.allowed) {
       await sendTextMessage(phoneNumberId, business.whatsappAccessToken, from,
         'Thank you for your message! Our team will get back to you shortly. 🙏'

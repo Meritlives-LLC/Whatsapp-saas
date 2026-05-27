@@ -1,4 +1,28 @@
 require('dotenv').config();
+
+// ─── Startup environment validation ─────────────────────────
+// Fail fast with a clear message rather than cryptic runtime errors.
+const REQUIRED_ENV = [
+  'MONGODB_URI',
+  'JWT_SECRET',
+  'JWT_REFRESH_SECRET',
+  'WHATSAPP_VERIFY_TOKEN',
+  'DEEPSEEK_API_KEY',
+  'PAYSTACK_SECRET_KEY',
+  'FRONTEND_URL',
+];
+const missing = REQUIRED_ENV.filter(k => !process.env[k]);
+if (missing.length > 0) {
+  console.error(`\n❌  Missing required environment variables:\n   ${missing.join('\n   ')}\n\nCopy backend/.env.example to backend/.env and fill in the values.\n`);
+  process.exit(1);
+}
+if (process.env.NODE_ENV === 'production') {
+  const PROD_EMAIL = ['EMAIL_HOST', 'EMAIL_USER', 'EMAIL_PASS'];
+  const missingEmail = PROD_EMAIL.filter(k => !process.env[k]);
+  if (missingEmail.length > 0) {
+    console.warn(`⚠️  Production email vars missing (${missingEmail.join(', ')}) — falling back to Ethereal (no real emails)`);
+  }
+}
 const express     = require('express');
 const http        = require('http');
 const cors        = require('cors');
@@ -19,6 +43,7 @@ const {
   globalLimiter,
   requestLogger,
 } = require('./middlewares/security');
+const xss = require('xss-clean');
 
 // Ensure logs directory exists
 const fs   = require('fs');
@@ -83,6 +108,7 @@ app.use(cookieParser());
 app.use(express.json({ limit: '10kb' }));
 app.use(express.urlencoded({ extended: true, limit: '10kb' }));
 app.use(sanitize);
+app.use(xss());
 app.use(requestLogger);
 app.use(globalLimiter);
 

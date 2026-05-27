@@ -1,8 +1,8 @@
 const Subscription = require('../models/Subscription');
 const { PLANS, getPlan } = require('../config/plans');
 const paystackService = require('../services/paystackService');
-const crypto = require('crypto');
 const axios = require('axios');
+const logger = require('../config/logger');
 
 /**
  * GET /api/subscription — get current subscription + usage
@@ -77,14 +77,19 @@ exports.upgrade = async (req, res) => {
           { customer: email, plan: plan.paystackPlanCode },
           { headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}` } }
         );
-        // Store subscription code for future cancellations
+        const subData = subResult.data.data || {};
+        // Store subscription code AND email token — both are required for cancellation
         await Subscription.findOneAndUpdate(
           { business: business._id },
-          { paystackSubscriptionCode: subResult.data.data?.subscription_code },
+          {
+            paystackSubscriptionCode: subData.subscription_code,
+            paystackEmailToken:       subData.email_token,
+            paystackCustomerCode:     subData.customer?.customer_code,
+          },
           { upsert: true }
         );
       } catch (subErr) {
-        console.error('Paystack subscription create error:', subErr.message);
+        logger.error('Paystack subscription create error:', subErr.message);
       }
     }
 
@@ -152,7 +157,7 @@ exports.cancel = async (req, res) => {
         'https://api.paystack.co/subscription/disable',
         { code: sub.paystackSubscriptionCode, token: sub.paystackEmailToken },
         { headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}` } }
-      ).catch(err => console.error('Paystack cancel error:', err.message));
+      ).catch(err => logger.error(`Paystack cancel error: ${err.message}`));
     }
 
     sub.cancelAtPeriodEnd = true;
@@ -169,18 +174,32 @@ exports.cancel = async (req, res) => {
 
 /**
  * POST /api/subscription/paystack-webhook — handle Paystack subscription events
+ * Route uses express.raw() so req.body is a Buffer — must use .toString() for HMAC
  */
 exports.paystackWebhook = async (req, res) => {
   const signature = req.headers['x-paystack-signature'];
-  const hash = crypto
-    .createHmac('sha512', process.env.PAYSTACK_SECRET_KEY)
-    .update(JSON.stringify(req.body))
-    .digest('hex');
 
-  if (hash !== signature) return res.status(401).send('Invalid signature');
+  // CRITICAL: req.body is a raw Buffer (from express.raw middleware on this route).
+  // JSON.stringify(Buffer) gives {"type":"Buffer","data":[...]} — wrong hash.
+  // Call .toString() to get the original body string before hashing.
+  if (!paystackService.validateWebhookSignature(req.body, signature)) {
+    return res.status(401).send('Invalid signature');
+  }
+
   res.status(200).send('OK');
 
-  const { event, data } = req.body;
+  // Parse body now that signature is verified
+  let event, data;
+  try {
+    ({ event, data } = JSON.parse(req.body.toString()));
+  } catch {
+    return;
+  }
+
+  // Idempotency guard — prevent duplicate processing across restarts
+  const webhookRef = data?.subscription_code || data?.reference || data?.transfer_code
+    || JSON.stringify(data).slice(0, 40);
+  if (paystackService.isAlreadyProcessed(webhookRef)) return;
 
   try {
     switch (event) {
@@ -203,8 +222,23 @@ exports.paystackWebhook = async (req, res) => {
         }
         break;
       }
+      case 'subscription.create': {
+        // Paystack sends this when a subscription is created — store email_token for cancellations
+        const subCode   = data.subscription_code;
+        const emailToken = data.email_token;
+        const custCode  = data.customer?.customer_code;
+        if (subCode) {
+          await Subscription.findOneAndUpdate(
+            { paystackSubscriptionCode: subCode },
+            {
+              ...(emailToken && { paystackEmailToken: emailToken }),
+              ...(custCode   && { paystackCustomerCode: custCode }),
+            }
+          );
+        }
+        break;
+      }
       case 'subscription.disable': {
-        // Paystack notifies us when a subscription is disabled
         const subCode = data.subscription_code;
         await Subscription.findOneAndUpdate(
           { paystackSubscriptionCode: subCode },
@@ -213,7 +247,6 @@ exports.paystackWebhook = async (req, res) => {
         break;
       }
       case 'invoice.payment_failed': {
-        // Mark as past_due — they can't use AI until they pay
         const customerCode = data.customer?.customer_code;
         if (customerCode) {
           await Subscription.findOneAndUpdate(
@@ -225,6 +258,6 @@ exports.paystackWebhook = async (req, res) => {
       }
     }
   } catch (err) {
-    console.error('Subscription webhook error:', err.message);
+    logger.error(`Subscription webhook error: ${err.message}`);
   }
 };

@@ -6,7 +6,7 @@ const crypto = require('crypto');
 const Business = require('../models/Business');
 const logger = require('../config/logger');
 
-const META_API_VERSION = 'v19.0';
+const META_API_VERSION = 'v21.0';
 const GRAPH_URL = `https://graph.facebook.com/${META_API_VERSION}`;
 
 // ── Step 1: Build and return the Meta OAuth URL ───────────────────────────────
@@ -62,11 +62,11 @@ exports.oauthCallback = async (req, res) => {
   // Handle user denial
   if (error) {
     logger.warn(`Meta OAuth denied: ${error} — ${error_description}`);
-    return res.redirect(`${FRONTEND_URL}/whatsapp-connect?error=denied`);
+    return res.redirect(`${FRONTEND_URL}/connect-whatsapp?error=denied`);
   }
 
   if (!code || !state) {
-    return res.redirect(`${FRONTEND_URL}/whatsapp-connect?error=invalid_callback`);
+    return res.redirect(`${FRONTEND_URL}/connect-whatsapp?error=invalid_callback`);
   }
 
   // Decode state to get userId
@@ -76,7 +76,7 @@ exports.oauthCallback = async (req, res) => {
     [userId] = decoded.split(':');
     if (!userId) throw new Error('Empty userId in state');
   } catch {
-    return res.redirect(`${FRONTEND_URL}/whatsapp-connect?error=invalid_state`);
+    return res.redirect(`${FRONTEND_URL}/connect-whatsapp?error=invalid_state`);
   }
 
   try {
@@ -137,7 +137,7 @@ exports.oauthCallback = async (req, res) => {
     if (phoneNumbers.length === 0) {
       // No WhatsApp numbers found — redirect with error
       return res.redirect(
-        `${FRONTEND_URL}/whatsapp-connect?error=no_phone_numbers&token=${encodeURIComponent(longLivedToken)}`
+        `${FRONTEND_URL}/connect-whatsapp?error=no_phone_numbers&token=${encodeURIComponent(longLivedToken)}`
       );
     }
 
@@ -154,17 +154,17 @@ exports.oauthCallback = async (req, res) => {
       );
 
       logger.info(`WhatsApp auto-connected for user ${userId}: ${phone.displayNumber}`);
-      return res.redirect(`${FRONTEND_URL}/whatsapp-connect?success=true&phone=${encodeURIComponent(phone.displayNumber)}`);
+      return res.redirect(`${FRONTEND_URL}/connect-whatsapp?success=true&phone=${encodeURIComponent(phone.displayNumber)}`);
     }
 
     // Multiple phones — let user pick (send them to frontend with token + options)
     const encoded = encodeURIComponent(JSON.stringify({ token: longLivedToken, phones: phoneNumbers }));
-    return res.redirect(`${FRONTEND_URL}/whatsapp-connect?step=pick_phone&data=${encoded}`);
+    return res.redirect(`${FRONTEND_URL}/connect-whatsapp?step=pick_phone&data=${encoded}`);
 
   } catch (err) {
     const metaError = err.response?.data?.error?.message || err.message;
     logger.error(`Meta OAuth callback error: ${metaError}`);
-    return res.redirect(`${FRONTEND_URL}/whatsapp-connect?error=token_exchange&detail=${encodeURIComponent(metaError)}`);
+    return res.redirect(`${FRONTEND_URL}/connect-whatsapp?error=token_exchange&detail=${encodeURIComponent(metaError)}`);
   }
 };
 

@@ -128,7 +128,7 @@ exports.sendWelcomeEmail = async (user, businessName) => {
  * Password reset email
  */
 exports.sendPasswordResetEmail = async (user, resetToken) => {
-  const resetUrl = `${process.env.FRONTEND_URL}/reset-password?token=${resetToken}`;
+  const resetUrl = `${process.env.FRONTEND_URL}/reset-password/${resetToken}`;
   await sendEmail({
     to: user.email,
     subject: 'Reset your WA AutoBot password',

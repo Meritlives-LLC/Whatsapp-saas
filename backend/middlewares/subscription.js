@@ -1,5 +1,6 @@
 const Subscription = require('../models/Subscription');
 const { getPlan } = require('../config/plans');
+const logger = require('../config/logger');
 
 /**
  * Attach subscription to req — call this on protected routes
@@ -31,7 +32,7 @@ exports.attachSubscription = async (req, res, next) => {
     req.plan = getPlan(sub.plan);
     next();
   } catch (err) {
-    console.error('Subscription middleware error:', err.message);
+    logger.error(`Subscription middleware error: ${err.message}`);
     next();
   }
 };

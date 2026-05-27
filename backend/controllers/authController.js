@@ -75,6 +75,8 @@ exports.login = async (req, res) => {
     const accessToken = signAccessToken(user._id);
     const refreshToken = signRefreshToken(user._id);
     setRefreshCookie(res, refreshToken);
+    user.lastLoginAt = new Date();
+    await user.save({ validateBeforeSave: false });
     logger.info(`Login: ${user.email}`);
 
     res.json({

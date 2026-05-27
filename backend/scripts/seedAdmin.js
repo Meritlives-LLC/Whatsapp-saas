@@ -2,7 +2,7 @@
  * Run once to create your first admin account:
  *   node scripts/seedAdmin.js
  */
-require('dotenv').config({ path: '../.env' });
+require('dotenv').config();
 const mongoose = require('mongoose');
 const User = require('../models/User');
 
