@@ -9,51 +9,88 @@ const logger = require('../config/logger');
 let io;
 exports.setIO = (socketIO) => { io = socketIO; };
 
-// ─── GET /api/webhook — Meta verification ─────────────────────────────────────
-// Meta calls this when you save the webhook URL in their dashboard.
-// It sends hub.mode, hub.verify_token, hub.challenge as query params.
-// We must respond with the challenge string EXACTLY — plain text, status 200.
+const FALLBACK_REPLIES = {
+  image:    `Thanks for sending that image! 📸 One of our team members will review it and get back to you shortly.`,
+  audio:    `Thanks for your voice message! 🎙️ We'll listen to it and reply as soon as possible.`,
+  video:    `Thanks for the video! 🎥 Our team will review it and get back to you shortly.`,
+  document: `Thanks for sending that document! 📄 Our team will review it and get back to you shortly.`,
+  sticker:  `Hey there! 👋 How can we help you today?`,
+  location: `Thanks for sharing your location! 📍 We'll use this to assist you better.`,
+  contacts: `Thanks for sharing that contact! We'll get back to you shortly.`,
+  reaction: null,
+};
+
+const NON_TEXT_TYPES = new Set(Object.keys(FALLBACK_REPLIES));
+
 exports.verifyWebhook = (req, res) => {
   const mode      = req.query['hub.mode'];
   const token     = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
 
-  logger.info(`Webhook verify attempt — mode: ${mode}, token: ${token}`);
-
-  if (!mode || !token) {
-    logger.warn('Webhook verify: missing mode or token');
-    return res.status(400).send('Bad Request');
-  }
+  if (!mode || !token) return res.status(400).send('Bad Request');
 
   if (mode === 'subscribe' && token === process.env.WHATSAPP_VERIFY_TOKEN) {
-    logger.info('✅ WhatsApp webhook verified successfully');
-    // CRITICAL: Must return the challenge as plain text, not JSON
+    logger.info('✅ WhatsApp webhook verified');
     return res.status(200).send(challenge);
   }
 
-  logger.warn(`Webhook verify FAILED — token mismatch. Expected: "${process.env.WHATSAPP_VERIFY_TOKEN}", Got: "${token}"`);
   return res.status(403).send('Forbidden');
 };
 
-// ─── POST /api/webhook — Receive messages from Meta ───────────────────────────
 exports.receiveMessage = async (req, res) => {
-  // CRITICAL: Respond 200 immediately — Meta retries if we don't respond fast
   res.status(200).send('EVENT_RECEIVED');
 
   try {
     const parsed = parseWebhookMessage(req.body);
-    if (!parsed || !parsed.text) return;
+    if (!parsed) return;
 
-    const { phoneNumberId, from, messageId, text, customerName } = parsed;
+    const { phoneNumberId, from, messageId, text, customerName, type } = parsed;
 
-    // Find business by their WhatsApp Phone Number ID
+    // ── Non-text fallback ─────────────────────────────────────────────────────
+    if (NON_TEXT_TYPES.has(type)) {
+      const fallbackText = FALLBACK_REPLIES[type];
+      if (!fallbackText) return;
+
+      const business = await Business.findOne({ whatsappPhoneNumberId: phoneNumberId });
+      if (!business || !business.settings?.autoReply) return;
+
+      await markAsRead(phoneNumberId, business.whatsappAccessToken, messageId).catch(() => {});
+
+      let conversation = await Conversation.findOne({ business: business._id, customerPhone: from });
+      if (!conversation) {
+        conversation = await Conversation.create({
+          business: business._id, customerPhone: from, customerName, messages: [],
+        });
+      }
+
+      conversation.messages.push({ direction: 'inbound', content: `[${type}]`, whatsappMessageId: messageId });
+      conversation.messages.push({ direction: 'outbound', content: fallbackText, sentBy: 'ai' });
+      conversation.lastMessageAt = new Date();
+      conversation.status = 'open';
+      await conversation.save();
+
+      await sendTextMessage(phoneNumberId, business.whatsappAccessToken, from, fallbackText);
+
+      if (io) {
+        io.to(`business_${business._id}`).emit('new_message', {
+          conversationId: conversation._id,
+          customerPhone: from,
+          customerName: conversation.customerName,
+          message: { direction: 'inbound',  content: `[${type}]` },
+          reply:   { direction: 'outbound', content: fallbackText, sentBy: 'ai' },
+        });
+      }
+      return;
+    }
+
+    // ── Text messages ─────────────────────────────────────────────────────────
+    if (!text) return;
+
     const business = await Business.findOne({ whatsappPhoneNumberId: phoneNumberId });
     if (!business || !business.settings?.autoReply) return;
 
-    // Mark message as read (shows blue ticks)
     await markAsRead(phoneNumberId, business.whatsappAccessToken, messageId).catch(() => {});
 
-    // Check subscription / AI usage limit
     let subscription = await Subscription.findOne({ business: business._id });
     if (!subscription) {
       subscription = await Subscription.create({ business: business._id, plan: 'free' });
@@ -68,7 +105,6 @@ exports.receiveMessage = async (req, res) => {
       return;
     }
 
-    // Get or create conversation
     let conversation = await Conversation.findOne({ business: business._id, customerPhone: from });
     if (!conversation) {
       conversation = await Conversation.create({
@@ -80,7 +116,6 @@ exports.receiveMessage = async (req, res) => {
     conversation.lastMessageAt = new Date();
     conversation.status = 'open';
 
-    // Generate AI reply
     let replyText;
     try {
       replyText = await generateReply(business, conversation, text);
@@ -90,17 +125,15 @@ exports.receiveMessage = async (req, res) => {
       replyText = "Thank you for your message! We'll get back to you shortly.";
     }
 
-    // Send reply via WhatsApp
     await sendTextMessage(phoneNumberId, business.whatsappAccessToken, from, replyText);
 
     conversation.messages.push({ direction: 'outbound', content: replyText, sentBy: 'ai' });
 
-    // Auto lead detection
     if (conversation.messages.length >= 4 && !conversation.isLead) {
       const info = await extractLeadInfo(conversation.messages).catch(() => null);
       if (info?.name && info.name !== 'null') {
-        conversation.customerName  = info.name  || conversation.customerName;
-        conversation.customerEmail = info.email || '';
+        conversation.customerName     = info.name     || conversation.customerName;
+        conversation.customerEmail    = info.email    || '';
         conversation.customerInterest = info.interest || '';
         conversation.isLead = true;
       }
@@ -108,7 +141,6 @@ exports.receiveMessage = async (req, res) => {
 
     await conversation.save();
 
-    // Real-time dashboard update
     if (io) {
       io.to(`business_${business._id}`).emit('new_message', {
         conversationId: conversation._id,
