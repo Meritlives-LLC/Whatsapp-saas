@@ -8,6 +8,7 @@ import AuthPage from './pages/AuthPage';
 import LandingPage from './pages/LandingPage.jsx';
 import ForgotPassword from './pages/ForgotPassword';
 import ResetPassword from './pages/ResetPassword';
+import GoogleSuccess from './pages/GoogleSuccess';
 
 import Dashboard from './pages/Dashboard';
 import Conversations from './pages/Conversations';
@@ -58,6 +59,8 @@ function AppRoutes() {
       <Route path="/login"                     element={user ? <Navigate to="/" replace /> : <AuthPage />} />
       <Route path="/forgot-password"           element={<ForgotPassword />} />
       <Route path="/reset-password/:token"     element={<ResetPassword />} />
+      <Route path="/auth/google/success" element={<GoogleSuccess />} />
+      
 
       {/* Admin */}
       <Route path="/admin"            element={<AdminRoute><AdminLayout><AdminOverview /></AdminLayout></AdminRoute>} />
