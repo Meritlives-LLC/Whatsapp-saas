@@ -81,8 +81,10 @@ export const AuthProvider = ({ children }) => {
 
   const loginWithToken = (token) => {
     localStorage.setItem('token', token);
-    // fetch user profile
-    api.get('/auth/me').then(({ data }) => setUser(data.user));
+    api.defaults.headers.common['Authorization'] = `Bearer ${token}`;
+    api.get('/auth/me').then(({ data }) => {
+      setUser(data.user);
+    });
   };
 
   // ---------------- LOGOUT ----------------
