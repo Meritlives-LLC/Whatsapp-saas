@@ -18,6 +18,7 @@ import Analytics from './pages/Analytics';
 import Subscription from './pages/Subscription';
 import SubscriptionPage from './pages/SubscriptionPage';
 import WhatsAppConnect from './pages/WhatsAppConnect';
+import PrivacyPolicy from './pages/PrivacyPolicy';
 
 import AdminOverview from './pages/admin/AdminOverview';
 import AdminBusinesses from './pages/admin/AdminBusinesses';
@@ -50,6 +51,8 @@ function AppRoutes() {
     <Routes>
       {/* Landing page — public */}
       <Route path="/home" element={user ? <Navigate to="/" replace /> : <LandingPage />} />
+
+      <Route path="/privacy-policy" element={<PrivacyPolicy />} />
 
       {/* Auth — public */}
       <Route path="/login"                     element={user ? <Navigate to="/" replace /> : <AuthPage />} />
