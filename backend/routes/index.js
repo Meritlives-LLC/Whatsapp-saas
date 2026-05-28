@@ -12,6 +12,7 @@ const convCtrl  = require('../controllers/conversationController');
 const bizCtrl   = require('../controllers/businessController');
 const subCtrl   = require('../controllers/subscriptionController');
 const adminCtrl = require('../controllers/adminController');
+const { googleAuth, googleCallback } = require('../controllers/authController');
 
 
 // NOTE: /api/webhook GET and POST are registered directly in server.js
@@ -72,6 +73,9 @@ router.delete('/payments/bank-accounts/:id', protect, checkActive, bizCtrl.delet
 
 // ── ANALYTICS ─────────────────────────────────────────────────────────────────
 router.get('/analytics', protect, checkActive, bizCtrl.getAnalytics);
+
+router.get('/auth/google',          googleAuth);
+router.get('/auth/google/callback', googleCallback);
 
 // ── ADMIN ─────────────────────────────────────────────────────────────────────
 router.get('/admin/stats',                    protect, adminOnly, adminCtrl.getStats);

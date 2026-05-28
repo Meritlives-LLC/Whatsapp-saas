@@ -79,6 +79,12 @@ export const AuthProvider = ({ children }) => {
     return data;
   };
 
+  const loginWithToken = (token) => {
+    localStorage.setItem('token', token);
+    // fetch user profile
+    api.get('/auth/me').then(({ data }) => setUser(data.user));
+  };
+
   // ---------------- LOGOUT ----------------
   const logout = () => {
     localStorage.removeItem('token');

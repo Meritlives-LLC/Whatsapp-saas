@@ -165,3 +165,41 @@ exports.resetPassword = async (req, res) => {
     res.status(500).json({ success: false, message: 'Password reset failed.' });
   }
 };
+
+const passport = require('passport');
+const GoogleStrategy = require('passport-google-oauth20').Strategy;
+
+passport.use(new GoogleStrategy({
+  clientID:     process.env.GOOGLE_CLIENT_ID,
+  clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+  callbackURL:  `${process.env.BACKEND_URL}/auth/google/callback`,
+}, async (accessToken, refreshToken, profile, done) => {
+  try {
+    let user = await User.findOne({ email: profile.emails[0].value });
+    if (!user) {
+      user = await User.create({
+        name:         profile.displayName,
+        email:        profile.emails[0].value,
+        password:     crypto.randomBytes(32).toString('hex'), // random — can't login with password
+        googleId:     profile.id,
+        isVerified:   true,
+      });
+      await Business.create({ owner: user._id, name: `${profile.displayName}'s Business` });
+    }
+    return done(null, user);
+  } catch (err) {
+    return done(err, null);
+  }
+}));
+
+exports.googleAuth = passport.authenticate('google', { scope: ['profile', 'email'] });
+
+exports.googleCallback = [
+  passport.authenticate('google', { session: false, failureRedirect: `${process.env.FRONTEND_URL}/auth?error=google_failed` }),
+  (req, res) => {
+    const accessToken  = signAccessToken(req.user._id);
+    const refreshToken = signRefreshToken(req.user._id);
+    setRefreshCookie(res, refreshToken);
+    res.redirect(`${process.env.FRONTEND_URL}/auth/google/success?token=${accessToken}`);
+  },
+];
