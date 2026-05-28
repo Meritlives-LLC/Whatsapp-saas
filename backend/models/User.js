@@ -8,8 +8,10 @@ const userSchema = new mongoose.Schema({
   role:     { type: String, enum: ['admin', 'business'], default: 'business' },
   business: { type: mongoose.Schema.Types.ObjectId, ref: 'Business' },
   isActive: { type: Boolean, default: true },
+  googleId:    { type: String },
+  isVerified:  { type: Boolean, default: false },
   passwordResetToken:   { type: String, select: false },
-  passwordResetExpires: { type: Date, select: false },
+  passwordResetExpires: { type: Date,   select: false },
   lastLoginAt: { type: Date },
 }, { timestamps: true });
 

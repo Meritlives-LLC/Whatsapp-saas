@@ -1,5 +1,7 @@
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
+const passport = require('passport');
+const GoogleStrategy = require('passport-google-oauth20').Strategy;
 const User = require('../models/User');
 const Business = require('../models/Business');
 const emailService = require('../services/emailService');
@@ -14,11 +16,59 @@ const signRefreshToken = (id) =>
 const setRefreshCookie = (res, token) => {
   res.cookie('refreshToken', token, {
     httpOnly: true,
-    secure: true, // always true — Render and Vercel are both HTTPS
-    sameSite: 'none', // required for cross-origin (vercel.app → onrender.com)
+    secure: true,
+    sameSite: 'none',
     maxAge: 7 * 24 * 60 * 60 * 1000,
   });
 };
+
+// ─── Google OAuth Strategy (only if credentials are set) ─────────────────────
+if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
+  passport.use(new GoogleStrategy({
+    clientID:     process.env.GOOGLE_CLIENT_ID,
+    clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+    callbackURL:  `${process.env.BACKEND_URL}/auth/google/callback`,
+  }, async (accessToken, refreshToken, profile, done) => {
+    try {
+      let user = await User.findOne({ email: profile.emails[0].value });
+      if (!user) {
+        user = await User.create({
+          name:       profile.displayName,
+          email:      profile.emails[0].value,
+          password:   crypto.randomBytes(32).toString('hex'),
+          googleId:   profile.id,
+          isVerified: true,
+        });
+        await Business.create({ owner: user._id, name: `${profile.displayName}'s Business` });
+      }
+      return done(null, user);
+    } catch (err) {
+      return done(err, null);
+    }
+  }));
+}
+
+exports.googleAuth = (req, res, next) => {
+  if (!process.env.GOOGLE_CLIENT_ID) {
+    return res.redirect(`${process.env.FRONTEND_URL}/auth?error=google_not_configured`);
+  }
+  passport.authenticate('google', { scope: ['profile', 'email'] })(req, res, next);
+};
+
+exports.googleCallback = [
+  (req, res, next) => {
+    passport.authenticate('google', {
+      session: false,
+      failureRedirect: `${process.env.FRONTEND_URL}/auth?error=google_failed`,
+    })(req, res, next);
+  },
+  (req, res) => {
+    const accessToken  = signAccessToken(req.user._id);
+    const refreshToken = signRefreshToken(req.user._id);
+    setRefreshCookie(res, refreshToken);
+    res.redirect(`${process.env.FRONTEND_URL}/auth/google/success?token=${accessToken}`);
+  },
+];
 
 exports.register = async (req, res) => {
   try {
@@ -165,41 +215,3 @@ exports.resetPassword = async (req, res) => {
     res.status(500).json({ success: false, message: 'Password reset failed.' });
   }
 };
-
-const passport = require('passport');
-const GoogleStrategy = require('passport-google-oauth20').Strategy;
-
-passport.use(new GoogleStrategy({
-  clientID:     process.env.GOOGLE_CLIENT_ID,
-  clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-  callbackURL:  `${process.env.BACKEND_URL}/auth/google/callback`,
-}, async (accessToken, refreshToken, profile, done) => {
-  try {
-    let user = await User.findOne({ email: profile.emails[0].value });
-    if (!user) {
-      user = await User.create({
-        name:         profile.displayName,
-        email:        profile.emails[0].value,
-        password:     crypto.randomBytes(32).toString('hex'), // random — can't login with password
-        googleId:     profile.id,
-        isVerified:   true,
-      });
-      await Business.create({ owner: user._id, name: `${profile.displayName}'s Business` });
-    }
-    return done(null, user);
-  } catch (err) {
-    return done(err, null);
-  }
-}));
-
-exports.googleAuth = passport.authenticate('google', { scope: ['profile', 'email'] });
-
-exports.googleCallback = [
-  passport.authenticate('google', { session: false, failureRedirect: `${process.env.FRONTEND_URL}/auth?error=google_failed` }),
-  (req, res) => {
-    const accessToken  = signAccessToken(req.user._id);
-    const refreshToken = signRefreshToken(req.user._id);
-    setRefreshCookie(res, refreshToken);
-    res.redirect(`${process.env.FRONTEND_URL}/auth/google/success?token=${accessToken}`);
-  },
-];
