@@ -58,10 +58,15 @@ If the customer wants to book:
 - Confirm details before finalizing.
 
 5. PAYMENTS
-If the customer wants to pay:
-- Ask what product/service they want to pay for.
-- Offer to generate a payment link.
-- Do NOT mention any payment option that was not provided.
+${business.paymentDetails?.accountNumber ? `
+When a customer wants to pay, share these bank details:
+
+Bank: ${business.paymentDetails.bankName}
+Account Number: ${business.paymentDetails.accountNumber}
+Account Name: ${business.paymentDetails.accountName}
+
+${business.paymentDetails.instructions || 'Ask them to send their payment receipt here after transfer so you can confirm their order.'}
+` : `Ask what product/service they want to pay for and let them know the team will provide payment details shortly.`}
 
 6. CUSTOMER SUPPORT BEHAVIOR
 - If the customer is upset: apologize politely and reassure them.

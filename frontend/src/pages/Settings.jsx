@@ -1,13 +1,15 @@
 import { useState, useEffect } from 'react';
-import { Save, Bot, MessageSquare, Zap, Webhook } from 'lucide-react';
+import { Save, Bot, MessageSquare, Zap, Webhook, Banknote } from 'lucide-react';
 import api from '../utils/api';
 import logo from '../assets/logo.svg';
 
+const defaultForm = { name: '', description: '', price: '', category: '', currency: 'NGN' };
+
 export default function Settings() {
   const [business, setBusiness] = useState(null);
-  const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
-  const [tab, setTab] = useState('general');
+  const [saving, setSaving]     = useState(false);
+  const [saved, setSaved]       = useState(false);
+  const [tab, setTab]           = useState('general');
 
   useEffect(() => { api.get('/business').then(({ data }) => setBusiness(data.data)); }, []);
 
@@ -26,11 +28,7 @@ export default function Settings() {
   };
 
   const LogoIcon = () => (
-    <img
-      src={logo}
-      alt="logo"
-      className="w-4 h-4 object-contain rounded-sm"
-    />
+    <img src={logo} alt="logo" className="w-4 h-4 object-contain rounded-sm" />
   );
 
   const save = async () => {
@@ -47,9 +45,10 @@ export default function Settings() {
   if (!business) return <div className="p-8 text-gray-400">Loading...</div>;
 
   const tabs = [
-    { id: 'general', label: 'General', icon: LogoIcon },
-    { id: 'whatsapp', label: 'WhatsApp', icon: MessageSquare },
-    { id: 'ai', label: 'AI Knowledge', icon: Bot },
+    { id: 'general',    label: 'General',    icon: LogoIcon },
+    { id: 'whatsapp',   label: 'WhatsApp',   icon: MessageSquare },
+    { id: 'payment',    label: 'Payment',    icon: Banknote },
+    { id: 'ai',         label: 'AI Knowledge', icon: Bot },
     { id: 'automation', label: 'Automation', icon: Webhook },
   ];
 
@@ -70,10 +69,9 @@ export default function Settings() {
         </button>
       </div>
 
-      {/* On mobile: horizontal scrollable tab strip. On desktop: vertical sidebar */}
       <div className="flex flex-col md:flex-row gap-4 md:gap-6">
 
-        {/* Mobile: scrollable tab bar */}
+        {/* Mobile tabs */}
         <div className="md:hidden flex gap-2 overflow-x-auto pb-1 -mx-4 px-4 scrollbar-none">
           {tabs.map(({ id, label, icon: Icon }) => (
             <button key={id} onClick={() => setTab(id)}
@@ -85,7 +83,7 @@ export default function Settings() {
           ))}
         </div>
 
-        {/* Desktop: vertical tabs */}
+        {/* Desktop tabs */}
         <div className="hidden md:flex w-48 flex-col gap-1 flex-shrink-0">
           {tabs.map(({ id, label, icon: Icon }) => (
             <button key={id} onClick={() => setTab(id)}
@@ -97,8 +95,9 @@ export default function Settings() {
           ))}
         </div>
 
-        {/* Content panel */}
+        {/* Content */}
         <div className="flex-1 bg-white rounded-xl border border-gray-100 shadow-sm p-4 md:p-6">
+
           {tab === 'general' && (
             <div className="space-y-4">
               <h3 className="font-semibold text-gray-900 mb-4">Business Information</h3>
@@ -109,12 +108,13 @@ export default function Settings() {
                 <textarea value={business.description || ''} onChange={e => update('description', e.target.value)}
                   rows={3} className={`${inputCls} resize-none`} />
               </Field>
-              {/* Stack on mobile, side by side on desktop */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <Field label="Phone"><input value={business.phone || ''} onChange={e => update('phone', e.target.value)} className={inputCls} /></Field>
                 <Field label="Email"><input value={business.email || ''} onChange={e => update('email', e.target.value)} className={inputCls} /></Field>
               </div>
-              <Field label="Industry"><input value={business.industry || ''} onChange={e => update('industry', e.target.value)} className={inputCls} /></Field>
+              <Field label="Industry">
+                <input value={business.industry || ''} onChange={e => update('industry', e.target.value)} className={inputCls} />
+              </Field>
             </div>
           )}
 
@@ -138,6 +138,43 @@ export default function Settings() {
                 <code className="text-xs bg-white border border-gray-200 px-2 py-1 rounded break-all">
                   {window.location.origin}/api/webhook
                 </code>
+              </div>
+            </div>
+          )}
+
+          {tab === 'payment' && (
+            <div className="space-y-4">
+              <h3 className="font-semibold text-gray-900 mb-2">Payment Details</h3>
+              <p className="text-xs text-gray-400 bg-green-50 p-3 rounded-lg mb-4">
+                When customers ask how to pay, the AI will automatically share these bank details with them.
+              </p>
+              <Field label="Bank Name">
+                <input value={business.paymentDetails?.bankName || ''} onChange={e => update('paymentDetails.bankName', e.target.value)}
+                  className={inputCls} placeholder="e.g. First Bank" />
+              </Field>
+              <Field label="Account Number">
+                <input value={business.paymentDetails?.accountNumber || ''} onChange={e => update('paymentDetails.accountNumber', e.target.value)}
+                  className={inputCls} placeholder="e.g. 1234567890" />
+              </Field>
+              <Field label="Account Name">
+                <input value={business.paymentDetails?.accountName || ''} onChange={e => update('paymentDetails.accountName', e.target.value)}
+                  className={inputCls} placeholder="e.g. John's Bakery" />
+              </Field>
+              <Field label="Payment Instructions (optional)">
+                <textarea value={business.paymentDetails?.instructions || ''} onChange={e => update('paymentDetails.instructions', e.target.value)}
+                  rows={3} className={`${inputCls} resize-none`}
+                  placeholder="e.g. Send receipt to this number after payment for order confirmation." />
+              </Field>
+              <div className="bg-gray-50 rounded-xl p-4 text-sm text-gray-600">
+                <p className="font-semibold mb-2 text-gray-700">Preview — what customers will see:</p>
+                <p className="text-xs text-gray-500 whitespace-pre-line">{`To complete your payment, please transfer to:
+
+Bank: ${business.paymentDetails?.bankName || 'First Bank'}
+Account Number: ${business.paymentDetails?.accountNumber || '1234567890'}
+Account Name: ${business.paymentDetails?.accountName || 'Your Business Name'}
+
+${business.paymentDetails?.instructions || 'Send your payment receipt here after transfer and we will confirm your order. ✅'}`}
+                </p>
               </div>
             </div>
           )}
@@ -168,9 +205,9 @@ export default function Settings() {
             <div className="space-y-5">
               <h3 className="font-semibold text-gray-900 mb-4">Automation Settings</h3>
               {[
-                { key: 'settings.autoReply', label: 'Auto AI Reply', desc: 'AI automatically replies to incoming messages' },
-                { key: 'settings.autoFollowUp', label: 'Auto Follow-up', desc: 'Send follow-up messages to inactive conversations' },
-                { key: 'settings.leadCapture', label: 'Lead Capture', desc: 'Automatically detect and tag leads from conversations' },
+                { key: 'settings.autoReply',    label: 'Auto AI Reply',   desc: 'AI automatically replies to incoming messages' },
+                { key: 'settings.autoFollowUp', label: 'Auto Follow-up',  desc: 'Send follow-up messages to inactive conversations' },
+                { key: 'settings.leadCapture',  label: 'Lead Capture',    desc: 'Automatically detect and tag leads from conversations' },
               ].map(({ key, label, desc }) => (
                 <div key={key} className="flex items-center justify-between p-4 border border-gray-100 rounded-xl gap-4">
                   <div className="min-w-0">
@@ -189,6 +226,7 @@ export default function Settings() {
               </Field>
             </div>
           )}
+
         </div>
       </div>
     </div>
