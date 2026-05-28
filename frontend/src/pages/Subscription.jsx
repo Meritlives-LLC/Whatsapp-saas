@@ -15,13 +15,23 @@ const PLAN_COLORS = {
   pro:     { bg: 'bg-purple-50', text: 'text-purple-700', btn: 'bg-purple-600 hover:bg-purple-700', badge: 'Best value' },
 };
 
+// Format a display price using the plan's currencySymbol and displayPrice fields.
+// Falls back to NGN if API didn't return currency info yet.
+const formatPrice = (plan, sym = '₦') => {
+  if (!plan || plan.price === 0) return 'Free';
+  const amount = plan.displayPrice ?? plan.price;
+  return `${sym}${amount.toLocaleString()}`;
+};
+
 export default function Subscription() {
-  const [sub, setSub]           = useState(null);
-  const [plans, setPlans]       = useState({});
-  const [loading, setLoading]   = useState(true);
+  const [sub, setSub]             = useState(null);
+  const [plans, setPlans]         = useState({});
+  const [currency, setCurrency]   = useState('NGN');
+  const [currSym, setCurrSym]     = useState('₦');
+  const [loading, setLoading]     = useState(true);
   const [upgrading, setUpgrading] = useState(null);
   const [cancelling, setCancelling] = useState(false);
-  const [msg, setMsg]           = useState(null);
+  const [msg, setMsg]             = useState(null);
 
   useEffect(() => {
     Promise.all([
@@ -30,8 +40,14 @@ export default function Subscription() {
     ]).then(([subRes, plansRes]) => {
       setSub(subRes.data.data);
       setPlans(plansRes.data.data);
+      const cur = plansRes.data.currency || subRes.data.data?.currency || 'NGN';
+      setCurrency(cur);
+      // Pick symbol from any plan that has it, or fall back
+      const anyCurrSym = Object.values(plansRes.data.data).find(p => p.currencySymbol)?.currencySymbol || '₦';
+      setCurrSym(anyCurrSym);
     }).finally(() => setLoading(false));
 
+    // Handle return from Paystack — ?ref= on this page
     const urlParams = new URLSearchParams(window.location.search);
     const ref = urlParams.get('ref');
     if (ref) {
@@ -42,7 +58,7 @@ export default function Subscription() {
           return api.get('/subscription');
         })
         .then(res => setSub(res.data.data))
-        .catch(() => setMsg({ type: 'error', text: 'Payment verification failed. Contact support.' }));
+        .catch(() => setMsg({ type: 'error', text: 'Payment verification failed. Contact support if your payment went through.' }));
     }
   }, []);
 
@@ -86,6 +102,11 @@ export default function Subscription() {
   const nearLimit    = usagePercent >= 80;
   const atLimit      = usagePercent >= 100;
   const planOrder    = ['free', 'starter', 'growth', 'pro'];
+
+  // NGN note: Paystack charges in NGN regardless of display currency
+  const ngnNote = currency !== 'NGN'
+    ? <span className="text-xs text-gray-400 ml-1">(charged in ₦ NGN via Paystack)</span>
+    : null;
 
   return (
     <div className="p-4 md:p-8">
@@ -136,7 +157,11 @@ export default function Subscription() {
               )}
             </div>
             <div className={`text-xl md:text-2xl font-bold ${currentPlan === 'free' ? 'text-gray-900' : 'text-green-600'}`}>
-              {currentPlan === 'free' ? 'Free' : `₦${(plans[currentPlan]?.price || 0).toLocaleString()}/mo`}
+              {currentPlan === 'free'
+                ? 'Free'
+                : <>{formatPrice(plans[currentPlan], currSym)}<span className="text-sm font-normal text-gray-400">/mo</span></>
+              }
+              {currentPlan !== 'free' && ngnNote}
             </div>
           </div>
 
@@ -202,14 +227,18 @@ export default function Subscription() {
       </div>
 
       {/* Pricing plans */}
-      <div className="mb-4">
-        <h2 className="text-lg font-bold text-gray-900">Choose a plan</h2>
-        <p className="text-sm text-gray-400 mt-0.5">Upgrade or downgrade any time. Billed monthly in NGN.</p>
+      <div className="mb-4 flex items-end justify-between">
+        <div>
+          <h2 className="text-lg font-bold text-gray-900">Choose a plan</h2>
+          <p className="text-sm text-gray-400 mt-0.5">
+            Upgrade or downgrade any time. Billed monthly.{ngnNote}
+          </p>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
         {planOrder.map((planId) => {
-          const plan   = plans[planId];
+          const plan    = plans[planId];
           if (!plan) return null;
           const colors   = PLAN_COLORS[planId];
           const Icon     = PLAN_ICONS[planId];
@@ -247,7 +276,7 @@ export default function Subscription() {
                   <span className="text-2xl font-bold text-gray-900">Free</span>
                 ) : (
                   <>
-                    <span className="text-2xl font-bold text-gray-900">₦{plan.price.toLocaleString()}</span>
+                    <span className="text-2xl font-bold text-gray-900">{formatPrice(plan, currSym)}</span>
                     <span className="text-xs text-gray-400">/month</span>
                   </>
                 )}
@@ -288,15 +317,15 @@ export default function Subscription() {
         })}
       </div>
 
-      {/* FAQ */}
+      {/* Billing FAQ */}
       <div className="mt-8 md:mt-10 bg-white rounded-xl border border-gray-100 shadow-sm p-5 md:p-6">
         <h3 className="font-bold text-gray-900 mb-4">Billing FAQ</h3>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6">
           {[
-            { q: 'When am I charged?',                   a: 'On the day you upgrade and every 30 days after. Paystack charges your card automatically.' },
+            { q: 'When am I charged?',                    a: 'On the day you upgrade and monthly on the same date. Paystack handles recurring billing automatically.' },
             { q: 'What happens when I hit the AI limit?', a: 'AI replies pause. Customers get a polite fallback message. Manual replies still work. Upgrade to resume.' },
-            { q: 'Can I cancel anytime?',                 a: 'Yes. You keep access until the end of your billing period. No refunds for partial months.' },
-            { q: 'Do unused AI replies roll over?',       a: 'No. The counter resets on the 1st of each billing cycle.' },
+            { q: 'Can I cancel anytime?',                 a: 'Yes. You keep full access until the end of your billing period. No refunds for partial months.' },
+            { q: 'Do unused AI replies roll over?',       a: 'No. The counter resets on the 1st of each calendar month.' },
           ].map(({ q, a }) => (
             <div key={q}>
               <p className="text-sm font-semibold text-gray-900 mb-1">{q}</p>

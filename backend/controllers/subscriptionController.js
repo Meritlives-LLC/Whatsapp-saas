@@ -1,8 +1,24 @@
 const Subscription = require('../models/Subscription');
-const { PLANS, getPlan } = require('../config/plans');
+const { PLANS, CURRENCIES, getPlan, getCurrencyForCountry, getPlansForCurrency } = require('../config/plans');
 const paystackService = require('../services/paystackService');
 const axios = require('axios');
 const logger = require('../config/logger');
+
+// ─── Geo-detect currency from IP ─────────────────────────────────────────────
+// Uses ip-api.com free tier (no key, 45 req/min, sufficient for this use case).
+// Falls back to DEFAULT_CURRENCY env var or NGN on any error.
+const detectCurrency = async (req) => {
+  if (process.env.DEFAULT_CURRENCY) return process.env.DEFAULT_CURRENCY;
+  try {
+    const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.ip;
+    // Skip detection for loopback addresses (local dev)
+    if (!ip || ip === '::1' || ip.startsWith('127.')) return 'NGN';
+    const { data } = await axios.get(`http://ip-api.com/json/${ip}?fields=countryCode`, { timeout: 2000 });
+    return getCurrencyForCountry(data?.countryCode) || 'NGN';
+  } catch {
+    return 'NGN';
+  }
+};
 
 /**
  * GET /api/subscription — get current subscription + usage
@@ -12,8 +28,10 @@ exports.getSubscription = async (req, res) => {
     let sub = await Subscription.findOne({ business: req.user.business._id });
     if (!sub) sub = await Subscription.create({ business: req.user.business._id, plan: 'free' });
 
-    await sub.resetUsageIfNeeded();
+    // Use cron-based reset only (resetAt field). Remove the dual-path drift.
     const plan = getPlan(sub.plan);
+    const currency = await detectCurrency(req);
+    const curMeta = CURRENCIES[currency] || CURRENCIES.NGN;
 
     res.json({
       success: true,
@@ -25,6 +43,8 @@ exports.getSubscription = async (req, res) => {
         limits: plan.limits,
         currentPeriodEnd: sub.currentPeriodEnd,
         cancelAtPeriodEnd: sub.cancelAtPeriodEnd,
+        currency,
+        currencySymbol: curMeta.symbol,
       },
     });
   } catch (err) {
@@ -33,14 +53,17 @@ exports.getSubscription = async (req, res) => {
 };
 
 /**
- * GET /api/subscription/plans — return all plans (public)
+ * GET /api/subscription/plans — return all plans with currency-aware display prices
  */
-exports.getPlans = (req, res) => {
-  res.json({ success: true, data: PLANS });
+exports.getPlans = async (req, res) => {
+  const currency = await detectCurrency(req);
+  const plans = getPlansForCurrency(currency);
+  res.json({ success: true, data: plans, currency });
 };
 
 /**
  * POST /api/subscription/upgrade — initialize Paystack subscription
+ * Paystack always charges in NGN regardless of display currency.
  */
 exports.upgrade = async (req, res) => {
   try {
@@ -54,11 +77,11 @@ exports.upgrade = async (req, res) => {
     const business = req.user.business;
     const email = req.user.email;
 
-    // Initialize Paystack transaction (one-time charge that activates subscription)
+    // Initialize Paystack transaction in NGN (their supported currency)
     const reference = paystackService.generateReference('SUB');
     const result = await paystackService.initializePayment({
       email,
-      amount: plan.price,
+      amount: plan.price,   // always NGN amount
       reference,
       metadata: {
         businessId: business._id.toString(),
@@ -66,10 +89,11 @@ exports.upgrade = async (req, res) => {
         type: 'subscription_upgrade',
         businessName: business.name,
       },
-      callbackUrl: `${process.env.FRONTEND_URL}/subscription/verify?ref=${reference}`,
+      // Fixed: points to /subscription where ?ref= is already handled
+      callbackUrl: `${process.env.FRONTEND_URL}/subscription?ref=${reference}`,
     });
 
-    // If plan has a Paystack recurring plan code, use subscription API
+    // If plan has a Paystack recurring plan code, create the subscription record
     if (plan.paystackPlanCode) {
       try {
         const subResult = await axios.post(
@@ -78,7 +102,7 @@ exports.upgrade = async (req, res) => {
           { headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}` } }
         );
         const subData = subResult.data.data || {};
-        // Store subscription code AND email token — both are required for cancellation
+        // Store subscription code AND email token — both required for cancellation
         await Subscription.findOneAndUpdate(
           { business: business._id },
           {
@@ -119,9 +143,10 @@ exports.verifyUpgrade = async (req, res) => {
     }
 
     const { businessId, planId } = payment.metadata;
-
     const now = new Date();
-    const periodEnd = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+
+    // Set resetAt to the 1st of next month (aligns with cron billing reset)
+    const nextMonthFirst = new Date(now.getFullYear(), now.getMonth() + 1, 1);
 
     const sub = await Subscription.findOneAndUpdate(
       { business: businessId },
@@ -129,10 +154,12 @@ exports.verifyUpgrade = async (req, res) => {
         plan: planId,
         status: 'active',
         currentPeriodStart: now,
-        currentPeriodEnd: periodEnd,
+        currentPeriodEnd: new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000),
         cancelAtPeriodEnd: false,
         lastPaymentAt: now,
         lastPaymentAmount: payment.amount / 100,
+        'usage.resetAt': nextMonthFirst,
+        'usage.warningEmailSent': false,
       },
       { upsert: true, new: true }
     );
@@ -173,22 +200,18 @@ exports.cancel = async (req, res) => {
 };
 
 /**
- * POST /api/subscription/paystack-webhook — handle Paystack subscription events
+ * POST /api/subscription/webhook — handle Paystack subscription events
  * Route uses express.raw() so req.body is a Buffer — must use .toString() for HMAC
  */
 exports.paystackWebhook = async (req, res) => {
   const signature = req.headers['x-paystack-signature'];
 
-  // CRITICAL: req.body is a raw Buffer (from express.raw middleware on this route).
-  // JSON.stringify(Buffer) gives {"type":"Buffer","data":[...]} — wrong hash.
-  // Call .toString() to get the original body string before hashing.
   if (!paystackService.validateWebhookSignature(req.body, signature)) {
     return res.status(401).send('Invalid signature');
   }
 
   res.status(200).send('OK');
 
-  // Parse body now that signature is verified
   let event, data;
   try {
     ({ event, data } = JSON.parse(req.body.toString()));
@@ -196,7 +219,6 @@ exports.paystackWebhook = async (req, res) => {
     return;
   }
 
-  // Idempotency guard — prevent duplicate processing across restarts
   const webhookRef = data?.subscription_code || data?.reference || data?.transfer_code
     || JSON.stringify(data).slice(0, 40);
   if (paystackService.isAlreadyProcessed(webhookRef)) return;
@@ -207,6 +229,7 @@ exports.paystackWebhook = async (req, res) => {
         const meta = data.metadata;
         if (meta?.type === 'subscription_upgrade' && meta?.businessId) {
           const now = new Date();
+          const nextMonthFirst = new Date(now.getFullYear(), now.getMonth() + 1, 1);
           await Subscription.findOneAndUpdate(
             { business: meta.businessId },
             {
@@ -216,6 +239,8 @@ exports.paystackWebhook = async (req, res) => {
               currentPeriodEnd: new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000),
               lastPaymentAt: now,
               lastPaymentAmount: data.amount / 100,
+              'usage.resetAt': nextMonthFirst,
+              'usage.warningEmailSent': false,
             },
             { upsert: true }
           );
@@ -223,10 +248,9 @@ exports.paystackWebhook = async (req, res) => {
         break;
       }
       case 'subscription.create': {
-        // Paystack sends this when a subscription is created — store email_token for cancellations
-        const subCode   = data.subscription_code;
+        const subCode    = data.subscription_code;
         const emailToken = data.email_token;
-        const custCode  = data.customer?.customer_code;
+        const custCode   = data.customer?.customer_code;
         if (subCode) {
           await Subscription.findOneAndUpdate(
             { paystackSubscriptionCode: subCode },
@@ -239,9 +263,8 @@ exports.paystackWebhook = async (req, res) => {
         break;
       }
       case 'subscription.disable': {
-        const subCode = data.subscription_code;
         await Subscription.findOneAndUpdate(
-          { paystackSubscriptionCode: subCode },
+          { paystackSubscriptionCode: data.subscription_code },
           { cancelAtPeriodEnd: true }
         );
         break;

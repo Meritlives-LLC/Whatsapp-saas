@@ -15,39 +15,27 @@ const subscriptionSchema = new mongoose.Schema({
   currentPeriodEnd: { type: Date },
   cancelAtPeriodEnd: { type: Boolean, default: false },
 
-  // Usage tracking (resets monthly)
+  // Usage tracking — reset by cron on the 1st of each calendar month (resetAt)
+  // Do NOT reset elsewhere; the cron is the single source of truth for resets.
   usage: {
     aiRepliesCount:   { type: Number,  default: 0 },
-    usagePeriodStart: { type: Date,    default: Date.now },
-    // resetAt is used by the cron job to know when to reset the counter
+    // resetAt: cron resets usage when now >= resetAt, then advances to next 1st
     resetAt:          { type: Date,    default: () => new Date(new Date().getFullYear(), new Date().getMonth() + 1, 1) },
-    // Prevent the 80% warning email from firing on every cron run
+    // Prevent the 80%-warning email from firing more than once per cycle
     warningEmailSent: { type: Boolean, default: false },
   },
 
-  // Billing history reference
+  // Billing history
   lastPaymentAt: { type: Date },
   lastPaymentAmount: { type: Number },
 }, { timestamps: true });
 
-// Auto-set period end to 30 days from start if not set
+// Auto-set period end to 30 days from start if not explicitly set
 subscriptionSchema.pre('save', function (next) {
   if (this.isModified('currentPeriodStart') && !this.currentPeriodEnd) {
     this.currentPeriodEnd = new Date(this.currentPeriodStart.getTime() + 30 * 24 * 60 * 60 * 1000);
   }
   next();
 });
-
-// Check if usage period needs resetting (monthly)
-subscriptionSchema.methods.resetUsageIfNeeded = async function () {
-  const now = new Date();
-  const periodStart = new Date(this.usage.usagePeriodStart);
-  const monthPassed = (now - periodStart) >= 30 * 24 * 60 * 60 * 1000;
-  if (monthPassed) {
-    this.usage.aiRepliesCount = 0;
-    this.usage.usagePeriodStart = now;
-    await this.save();
-  }
-};
 
 module.exports = mongoose.model('Subscription', subscriptionSchema);

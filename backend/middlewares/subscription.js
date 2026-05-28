@@ -3,7 +3,7 @@ const { getPlan } = require('../config/plans');
 const logger = require('../config/logger');
 
 /**
- * Attach subscription to req — call this on protected routes
+ * Attach subscription to req — call this on protected routes that need plan info
  */
 exports.attachSubscription = async (req, res, next) => {
   try {
@@ -16,14 +16,13 @@ exports.attachSubscription = async (req, res, next) => {
       sub = await Subscription.create({ business: req.user.business._id, plan: 'free' });
     }
 
-    // Reset usage counter if new month
-    await sub.resetUsageIfNeeded();
-
-    // Check if paid subscription expired
+    // Downgrade if paid plan expired (cron handles the daily pass; this is a safety net
+    // for users who hit a route between midnight and when the cron fires)
     if (['starter', 'growth', 'pro'].includes(sub.plan)) {
-      if (sub.currentPeriodEnd && new Date() > sub.currentPeriodEnd && sub.status !== 'active') {
+      if (sub.currentPeriodEnd && new Date() > sub.currentPeriodEnd && sub.cancelAtPeriodEnd) {
         sub.plan = 'free';
-        sub.status = 'expired';
+        sub.status = 'active';
+        sub.cancelAtPeriodEnd = false;
         await sub.save();
       }
     }
@@ -38,20 +37,20 @@ exports.attachSubscription = async (req, res, next) => {
 };
 
 /**
- * Block AI reply if monthly limit exceeded
+ * Check whether the AI reply limit is reached for this subscription.
+ * Does NOT reset — reset is handled exclusively by the cron job.
  */
-exports.checkAiLimit = async (business, subscription) => {
+exports.checkAiLimit = (subscription) => {
   if (!subscription) return { allowed: true };
 
-  await subscription.resetUsageIfNeeded();
-  const plan = getPlan(subscription.plan);
+  const plan  = getPlan(subscription.plan);
   const limit = plan.limits.aiRepliesPerMonth;
-  const used = subscription.usage.aiRepliesCount;
+  const used  = subscription.usage.aiRepliesCount;
 
   if (used >= limit) {
     return {
       allowed: false,
-      message: `You've used all ${limit} AI replies on your ${plan.name} plan. Upgrade to continue.`,
+      message: `You've used all ${limit} AI replies on the ${plan.name} plan. Upgrade to continue.`,
       limitReached: true,
       plan: subscription.plan,
     };

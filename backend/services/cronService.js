@@ -7,6 +7,7 @@ const { sendTextMessage } = require('./whatsappService');
 const { checkAllTokens } = require('./whatsappTokenService');
 const emailService = require('./emailService');
 const User = require('../models/User');
+const { getPlan } = require('../config/plans');
 const logger = require('../config/logger');
 
 // ─── Auto follow-up (every hour) ─────────────────────────────────────────────
@@ -88,14 +89,18 @@ const setupReminderCron = () => {
   });
 };
 
-// ─── Subscription expiry check (daily at midnight) ────────────────────────────
+// ─── Subscription management (daily at midnight) ──────────────────────────────
+// Three responsibilities in one pass:
+//   1. Downgrade subscriptions that cancelled and hit their period end
+//   2. Send 80% AI-limit warning emails (once per cycle)
+//   3. Reset monthly usage counters when resetAt is reached
 const setupSubscriptionCron = () => {
   cron.schedule('0 0 * * *', async () => {
     try {
-      logger.info('Cron: checking subscription expiries');
+      logger.info('Cron: subscription management pass');
       const now = new Date();
 
-      // Downgrade expired subscriptions
+      // ── 1. Downgrade expired + cancelled subscriptions ─────────────────
       const expired = await Subscription.find({
         status: 'active',
         plan: { $ne: 'free' },
@@ -104,10 +109,10 @@ const setupSubscriptionCron = () => {
       }).populate({ path: 'business', populate: { path: 'owner', model: User } });
 
       for (const sub of expired) {
+        const freePlan = getPlan('free');
         sub.plan = 'free';
         sub.status = 'active';
         sub.cancelAtPeriodEnd = false;
-        sub.limits = { aiRepliesPerMonth: 100, whatsappNumbers: 1, products: 5 };
         await sub.save();
 
         const owner = sub.business?.owner;
@@ -115,13 +120,13 @@ const setupSubscriptionCron = () => {
           await emailService.sendEmail({
             to: owner.email,
             subject: 'Your WA AutoBot subscription has ended',
-            html: `<p>Hi ${owner.name},</p><p>Your subscription has ended and you've been moved to the Free plan (100 AI replies/month). <a href="${process.env.FRONTEND_URL}/subscription">Resubscribe anytime</a>.</p>`,
+            html: `<p>Hi ${owner.name},</p><p>Your subscription has ended and you've been moved to the Free plan (${freePlan.limits.aiRepliesPerMonth} AI replies/month). <a href="${process.env.FRONTEND_URL}/subscription">Resubscribe anytime</a>.</p>`,
           }).catch(() => {});
         }
         logger.info(`Subscription expired & downgraded: ${sub.business?.name}`);
       }
 
-      // ── AI limit warning at 80% ────────────────────────────────────────
+      // ── 2. AI limit warning at 80% (paid plans only, once per cycle) ───
       const nearLimit = await Subscription.find({
         plan: { $ne: 'free' },
         status: 'active',
@@ -129,7 +134,8 @@ const setupSubscriptionCron = () => {
       }).populate({ path: 'business', populate: { path: 'owner', model: User } });
 
       for (const sub of nearLimit) {
-        const limit = sub.limits?.aiRepliesPerMonth || 100;
+        const plan  = getPlan(sub.plan);
+        const limit = plan.limits.aiRepliesPerMonth;
         const used  = sub.usage?.aiRepliesCount || 0;
         const pct   = (used / limit) * 100;
 
@@ -144,11 +150,10 @@ const setupSubscriptionCron = () => {
         }
       }
 
-      // ── Reset monthly usage on billing cycle ───────────────────────────
-      const toReset = await Subscription.find({
-        'usage.resetAt': { $lt: now },
-      });
-
+      // ── 3. Reset monthly usage when resetAt is past ────────────────────
+      // resetAt defaults to the 1st of next month at account creation, and is
+      // advanced by one month on every reset. This is the ONLY place usage resets.
+      const toReset = await Subscription.find({ 'usage.resetAt': { $lt: now } });
       for (const sub of toReset) {
         sub.usage.aiRepliesCount = 0;
         sub.usage.warningEmailSent = false;
