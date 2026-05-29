@@ -56,13 +56,15 @@ export const AuthProvider = ({ children }) => {
   };
 
   // ── Login with token (Google OAuth) ──────────────────────────────────────
-  const loginWithToken = (token) => {
+  // Returns a Promise so GoogleSuccess.jsx can await it before navigating.
+  // Navigation must happen AFTER user is set — otherwise PrivateRoute sees
+  // null and bounces to /login before the /auth/me response arrives.
+  const loginWithToken = async (token) => {
     localStorage.setItem('token', token);
     api.defaults.headers.common['Authorization'] = `Bearer ${token}`;
-    api.get('/auth/me').then(({ data }) => {
-      setUser(data.user);
-      setBusiness(data.business || null);
-    });
+    const { data } = await api.get('/auth/me');
+    setUser(data.user);
+    setBusiness(data.business || null);
   };
 
   // ── Logout ────────────────────────────────────────────────────────────────
