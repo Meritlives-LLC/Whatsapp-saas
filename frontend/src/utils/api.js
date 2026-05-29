@@ -1,9 +1,7 @@
 import axios from 'axios';
 
-// VITE_API_URL already includes /api e.g. https://api.yourdomain.com/api
-// Leave it blank in development — Vite proxy handles /api → localhost:5000
 const api = axios.create({
-  baseURL: import.meta.env.VITE_API_URL || '/api',
+  baseURL: import.meta.env.VITE_API_URL,
   withCredentials: true,
 });
 
@@ -46,8 +44,11 @@ api.interceptors.response.use(
       isRefreshing    = true;
 
       try {
-        const refreshBase = import.meta.env.VITE_API_URL || '/api';
-        const { data } = await axios.post(refreshBase + '/auth/refresh', {}, { withCredentials: true });
+        const { data } = await axios.post(
+          import.meta.env.VITE_API_URL + '/auth/refresh',
+          {},
+          { withCredentials: true }
+        );
         const { token } = data;
         localStorage.setItem('token', token);
         api.defaults.headers.common['Authorization'] = `Bearer ${token}`;
