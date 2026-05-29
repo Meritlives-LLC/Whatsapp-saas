@@ -46,8 +46,22 @@ const AdminRoute = ({ children }) => {
   return children;
 };
 
+// Root route: show spinner while auth loads, then branch on user
+const RootRoute = () => {
+  const { user, loading } = useAuth();
+  if (loading) return <Spinner />;
+  if (user) return <Layout><Dashboard /></Layout>;
+  return <LandingPage />;
+};
+
 function AppRoutes() {
-  const { user } = useAuth();
+  const { user, loading } = useAuth();
+
+  // Block ALL route rendering until auth is resolved.
+  // Without this, navigating to "/" after Google OAuth lands on LandingPage
+  // because user is still null while loginWithToken is mid-flight.
+  if (loading) return <Spinner />;
+
   return (
     <Routes>
       {/* Landing page — public */}
@@ -59,8 +73,8 @@ function AppRoutes() {
       <Route path="/login"                     element={user ? <Navigate to="/" replace /> : <AuthPage />} />
       <Route path="/forgot-password"           element={<ForgotPassword />} />
       <Route path="/reset-password/:token"     element={<ResetPassword />} />
+      {/* Google OAuth lands here — must be public, no PrivateRoute wrapper */}
       <Route path="/auth/google/success"       element={<GoogleSuccess />} />
-
 
       {/* Admin */}
       <Route path="/admin"            element={<AdminRoute><AdminLayout><AdminOverview /></AdminLayout></AdminRoute>} />
@@ -68,8 +82,10 @@ function AppRoutes() {
       <Route path="/admin/revenue"    element={<AdminRoute><AdminLayout><AdminRevenue /></AdminLayout></AdminRoute>} />
       <Route path="/admin/settings"   element={<AdminRoute><AdminLayout><AdminSettings /></AdminLayout></AdminRoute>} />
 
+      {/* Root: spinner → dashboard or landing */}
+      <Route path="/" element={<RootRoute />} />
+
       {/* Business dashboard */}
-      <Route path="/" element={user ? <PrivateRoute><Layout><Dashboard /></Layout></PrivateRoute> : <LandingPage />} />
       <Route path="/conversations"    element={<PrivateRoute><Layout><Conversations /></Layout></PrivateRoute>} />
       <Route path="/products"         element={<PrivateRoute><Layout><Products /></Layout></PrivateRoute>} />
       <Route path="/bookings"         element={<PrivateRoute><Layout><Bookings /></Layout></PrivateRoute>} />
