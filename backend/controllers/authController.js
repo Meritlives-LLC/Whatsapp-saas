@@ -59,7 +59,7 @@ exports.googleCallback = [
   (req, res, next) => {
     passport.authenticate('google', {
       session: false,
-      failureRedirect: `${process.env.FRONTEND_URL}/auth?error=google_failed`,
+      failureRedirect: `${process.env.FRONTEND_URL}/login?error=google_failed`,
     })(req, res, next);
   },
   (req, res) => {
@@ -176,6 +176,14 @@ exports.forgotPassword = async (req, res) => {
     if (!email) return res.status(400).json({ success: false, message: 'Email is required' });
     const user = await User.findOne({ email: email.toLowerCase() });
     if (!user) return res.json({ success: true, message: 'If that email exists, a reset link has been sent.' });
+
+    // Prevent password reset for Google OAuth accounts — they have no password to reset.
+    if (user.googleId) {
+      return res.status(400).json({
+        success: false,
+        message: 'This account uses Google Sign-In. Please continue with Google instead.',
+      });
+    }
 
     const resetToken = crypto.randomBytes(32).toString('hex');
     const hashedToken = crypto.createHash('sha256').update(resetToken).digest('hex');

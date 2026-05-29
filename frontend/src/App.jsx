@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
+import React from 'react';
 
 import Layout from './components/Layout';
 import AdminLayout from './components/AdminLayout';
@@ -20,6 +21,7 @@ import Subscription from './pages/Subscription';
 import SubscriptionPage from './pages/SubscriptionPage';
 import WhatsAppConnect from './pages/WhatsAppConnect';
 import PrivacyPolicy from './pages/PrivacyPolicy';
+import Pricing from './pages/Pricing';
 
 import AdminOverview from './pages/admin/AdminOverview';
 import AdminBusinesses from './pages/admin/AdminBusinesses';
@@ -31,6 +33,39 @@ const Spinner = () => (
     <div className="w-8 h-8 border-2 border-green-500 border-t-transparent rounded-full animate-spin" />
   </div>
 );
+
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+  componentDidCatch(error, info) {
+    console.error('App render error:', error, info);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen flex flex-col items-center justify-center bg-gray-50 p-8 text-center">
+          <div className="text-5xl mb-4">⚠️</div>
+          <h1 className="text-2xl font-semibold text-gray-800 mb-2">Something went wrong</h1>
+          <p className="text-gray-500 mb-6 max-w-md">
+            An unexpected error occurred. Your data is safe — please reload the page to continue.
+          </p>
+          <button
+            onClick={() => window.location.reload()}
+            className="px-6 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
+          >
+            Reload page
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 const PrivateRoute = ({ children }) => {
   const { user, loading } = useAuth();
@@ -68,6 +103,7 @@ function AppRoutes() {
       <Route path="/home" element={user ? <Navigate to="/" replace /> : <LandingPage />} />
 
       <Route path="/privacy-policy" element={<PrivacyPolicy />} />
+      <Route path="/pricing"         element={<Pricing />} />
 
       {/* Auth — public */}
       <Route path="/login"                     element={user ? <Navigate to="/" replace /> : <AuthPage />} />
@@ -105,7 +141,9 @@ export default function App() {
   return (
     <BrowserRouter>
       <AuthProvider>
-        <AppRoutes />
+        <ErrorBoundary>
+          <AppRoutes />
+        </ErrorBoundary>
       </AuthProvider>
     </BrowserRouter>
   );

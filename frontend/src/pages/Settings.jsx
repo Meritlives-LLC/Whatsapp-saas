@@ -136,7 +136,7 @@ export default function Settings() {
               <div className="bg-gray-50 rounded-xl p-4 text-sm text-gray-600">
                 <p className="font-semibold mb-1">Webhook URL to set in Meta:</p>
                 <code className="text-xs bg-white border border-gray-200 px-2 py-1 rounded break-all">
-                  {window.location.origin}/api/webhook
+                  {(import.meta.env.VITE_API_URL || window.location.origin)}/api/webhook
                 </code>
               </div>
             </div>

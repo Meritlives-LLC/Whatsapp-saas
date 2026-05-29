@@ -20,10 +20,11 @@ exports.getBusiness = async (req, res) => {
 exports.updateBusiness = async (req, res) => {
   try {
     // Whitelist: only allow safe fields. Never let users touch owner, isActive, or WhatsApp tokens here.
+    // whatsappAccessToken is intentionally excluded — it must only be written by the Meta OAuth callback.
     const ALLOWED = [
       'name', 'description', 'phone', 'email', 'website', 'industry',
       'aiKnowledge', 'settings',
-      'whatsappPhoneNumberId', 'whatsappAccessToken', 'whatsappVerifyToken',
+      'whatsappPhoneNumberId', 'whatsappVerifyToken',
     ];
     const update = {};
     for (const key of ALLOWED) {
