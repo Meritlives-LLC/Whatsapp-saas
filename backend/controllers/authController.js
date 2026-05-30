@@ -22,12 +22,12 @@ const setRefreshCookie = (res, token) => {
   });
 };
 
-// ─── Google OAuth Strategy (only if credentials are set) ─────────────────────
+// ─── Google OAuth Strategy ────────────────────────────────────────────────────
 if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
   passport.use(new GoogleStrategy({
     clientID:     process.env.GOOGLE_CLIENT_ID,
     clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-    callbackURL: `${process.env.BACKEND_URL}/api/auth/google/callback`,
+    callbackURL:  `${process.env.BACKEND_URL}/api/auth/google/callback`,
   }, async (accessToken, refreshToken, profile, done) => {
     try {
       let user = await User.findOne({ email: profile.emails[0].value });
@@ -50,9 +50,12 @@ if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
 
 exports.googleAuth = (req, res, next) => {
   if (!process.env.GOOGLE_CLIENT_ID) {
-    return res.redirect(`${process.env.FRONTEND_URL}/auth?error=google_not_configured`);
+    return res.redirect(`${process.env.FRONTEND_URL}/login?error=google_not_configured`);
   }
-  passport.authenticate('google', { scope: ['profile', 'email'] })(req, res, next);
+  passport.authenticate('google', {
+    scope: ['profile', 'email'],
+    prompt: 'select_account', // always show account chooser — no silent auto-login
+  })(req, res, next);
 };
 
 exports.googleCallback = [
@@ -84,12 +87,12 @@ exports.register = async (req, res) => {
     if (existingUser)
       return res.status(400).json({ success: false, message: 'Email already registered' });
 
-    const user = await User.create({ name, email, password });
+    const user     = await User.create({ name, email, password });
     const business = await Business.create({ owner: user._id, name: businessName || `${name}'s Business` });
-    user.business = business._id;
+    user.business  = business._id;
     await user.save();
 
-    const accessToken = signAccessToken(user._id);
+    const accessToken  = signAccessToken(user._id);
     const refreshToken = signRefreshToken(user._id);
     setRefreshCookie(res, refreshToken);
     emailService.sendWelcomeEmail(user, business.name).catch(() => {});
@@ -97,7 +100,7 @@ exports.register = async (req, res) => {
 
     res.status(201).json({
       success: true, token: accessToken,
-      user: { id: user._id, name: user.name, email: user.email, role: user.role },
+      user:     { id: user._id, name: user.name, email: user.email, role: user.role },
       business: { id: business._id, name: business.name },
     });
   } catch (err) {
@@ -122,7 +125,7 @@ exports.login = async (req, res) => {
     if (!user.isActive)
       return res.status(403).json({ success: false, message: 'Account suspended. Contact support.' });
 
-    const accessToken = signAccessToken(user._id);
+    const accessToken  = signAccessToken(user._id);
     const refreshToken = signRefreshToken(user._id);
     setRefreshCookie(res, refreshToken);
     user.lastLoginAt = new Date();
@@ -131,7 +134,7 @@ exports.login = async (req, res) => {
 
     res.json({
       success: true, token: accessToken,
-      user: { id: user._id, name: user.name, email: user.email, role: user.role },
+      user:     { id: user._id, name: user.name, email: user.email, role: user.role },
       business: user.business,
     });
   } catch (err) {
@@ -145,15 +148,15 @@ exports.refreshToken = async (req, res) => {
     const token = req.cookies?.refreshToken;
     if (!token) return res.status(401).json({ success: false, message: 'No refresh token' });
     const decoded = jwt.verify(token, process.env.JWT_REFRESH_SECRET);
-    const user = await User.findById(decoded.id).populate('business');
+    const user    = await User.findById(decoded.id).populate('business');
     if (!user || !user.isActive)
       return res.status(401).json({ success: false, message: 'Invalid refresh token' });
-    const newAccessToken = signAccessToken(user._id);
+    const newAccessToken  = signAccessToken(user._id);
     const newRefreshToken = signRefreshToken(user._id);
     setRefreshCookie(res, newRefreshToken);
     res.json({
       success: true, token: newAccessToken,
-      user: { id: user._id, name: user.name, email: user.email, role: user.role },
+      user:     { id: user._id, name: user.name, email: user.email, role: user.role },
       business: user.business,
     });
   } catch (err) {
@@ -174,10 +177,11 @@ exports.forgotPassword = async (req, res) => {
   try {
     const { email } = req.body;
     if (!email) return res.status(400).json({ success: false, message: 'Email is required' });
+
     const user = await User.findOne({ email: email.toLowerCase() });
     if (!user) return res.json({ success: true, message: 'If that email exists, a reset link has been sent.' });
 
-    // Prevent password reset for Google OAuth accounts — they have no password to reset.
+    // Block password reset for Google OAuth accounts — prevents account hijack
     if (user.googleId) {
       return res.status(400).json({
         success: false,
@@ -185,9 +189,9 @@ exports.forgotPassword = async (req, res) => {
       });
     }
 
-    const resetToken = crypto.randomBytes(32).toString('hex');
+    const resetToken  = crypto.randomBytes(32).toString('hex');
     const hashedToken = crypto.createHash('sha256').update(resetToken).digest('hex');
-    user.passwordResetToken = hashedToken;
+    user.passwordResetToken   = hashedToken;
     user.passwordResetExpires = new Date(Date.now() + 15 * 60 * 1000);
     await user.save({ validateBeforeSave: false });
     await emailService.sendPasswordResetEmail(user, resetToken);
@@ -201,7 +205,7 @@ exports.forgotPassword = async (req, res) => {
 
 exports.resetPassword = async (req, res) => {
   try {
-    const { token } = req.params;
+    const { token }    = req.params;
     const { password } = req.body;
     if (!password || password.length < 8)
       return res.status(400).json({ success: false, message: 'Password must be at least 8 characters' });
@@ -209,11 +213,14 @@ exports.resetPassword = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Password must contain uppercase, lowercase and a number' });
 
     const hashedToken = crypto.createHash('sha256').update(token).digest('hex');
-    const user = await User.findOne({ passwordResetToken: hashedToken, passwordResetExpires: { $gt: Date.now() } });
+    const user = await User.findOne({
+      passwordResetToken:   hashedToken,
+      passwordResetExpires: { $gt: Date.now() },
+    });
     if (!user) return res.status(400).json({ success: false, message: 'Reset token is invalid or expired' });
 
-    user.password = password;
-    user.passwordResetToken = undefined;
+    user.password             = password;
+    user.passwordResetToken   = undefined;
     user.passwordResetExpires = undefined;
     await user.save();
     logger.info(`Password reset completed: ${user.email}`);
