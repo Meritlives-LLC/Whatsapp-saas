@@ -252,8 +252,7 @@ exports.getBillingHistory = async (req, res) => {
     res.status(500).json({ success: false, message: err.message });
   }
 };
- * Route uses express.raw() so req.body is a Buffer — must use .toString() for HMAC
- */
+
 exports.paystackWebhook = async (req, res) => {
   const signature = req.headers['x-paystack-signature'];
 
