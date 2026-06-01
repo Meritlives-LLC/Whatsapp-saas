@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Save, Bot, MessageSquare, Zap, Webhook, Banknote } from 'lucide-react';
+import { Save, Bot, MessageSquare, Zap, Webhook, Banknote, ShieldCheck, Eye, EyeOff } from 'lucide-react';
 import api from '../utils/api';
 import logo from '../assets/logo.svg';
 
@@ -10,6 +10,12 @@ export default function Settings() {
   const [saving, setSaving]     = useState(false);
   const [saved, setSaved]       = useState(false);
   const [tab, setTab]           = useState('general');
+
+  // Security tab state
+  const [pwForm, setPwForm]         = useState({ current: '', newPw: '', confirm: '' });
+  const [showPw, setShowPw]         = useState({ current: false, newPw: false, confirm: false });
+  const [pwSaving, setPwSaving]     = useState(false);
+  const [pwMsg, setPwMsg]           = useState(null);
 
   useEffect(() => { api.get('/business').then(({ data }) => setBusiness(data.data)); }, []);
 
@@ -42,6 +48,28 @@ export default function Settings() {
     }
   };
 
+  const savePassword = async () => {
+    if (!pwForm.current || !pwForm.newPw || !pwForm.confirm) {
+      setPwMsg({ type: 'error', text: 'Please fill in all password fields.' }); return;
+    }
+    if (pwForm.newPw !== pwForm.confirm) {
+      setPwMsg({ type: 'error', text: 'New passwords do not match.' }); return;
+    }
+    if (pwForm.newPw.length < 6) {
+      setPwMsg({ type: 'error', text: 'New password must be at least 6 characters.' }); return;
+    }
+    setPwSaving(true);
+    try {
+      await api.post('/auth/change-password', { currentPassword: pwForm.current, newPassword: pwForm.newPw });
+      setPwMsg({ type: 'success', text: 'Password changed successfully!' });
+      setPwForm({ current: '', newPw: '', confirm: '' });
+    } catch (err) {
+      setPwMsg({ type: 'error', text: err.response?.data?.message || 'Failed to change password.' });
+    } finally {
+      setPwSaving(false);
+    }
+  };
+
   if (!business) return <div className="p-8 text-gray-400">Loading...</div>;
 
   const tabs = [
@@ -50,6 +78,7 @@ export default function Settings() {
     { id: 'payment',    label: 'Payment',    icon: Banknote },
     { id: 'ai',         label: 'AI Knowledge', icon: Bot },
     { id: 'automation', label: 'Automation', icon: Webhook },
+    { id: 'security',   label: 'Security',   icon: ShieldCheck },
   ];
 
   return (
@@ -224,6 +253,58 @@ ${business.paymentDetails?.instructions || 'Send your payment receipt here after
                 <input type="number" value={business.settings?.followUpDelayHours || 24}
                   onChange={e => update('settings.followUpDelayHours', Number(e.target.value))} className={inputCls} min={1} max={168} />
               </Field>
+            </div>
+          )}
+
+          {tab === 'security' && (
+            <div className="space-y-5">
+              <h3 className="font-semibold text-gray-900 mb-2">Change Password</h3>
+              <p className="text-xs text-gray-400 bg-blue-50 p-3 rounded-lg mb-4">
+                Leave unchanged if you signed up with Google — set a password here to also enable email login.
+              </p>
+
+              {pwMsg && (
+                <div className={`flex items-center gap-2 p-3 rounded-xl text-xs font-medium ${
+                  pwMsg.type === 'success' ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-600'
+                }`}>
+                  {pwMsg.text}
+                  <button onClick={() => setPwMsg(null)} className="ml-auto opacity-60 hover:opacity-100">✕</button>
+                </div>
+              )}
+
+              {[
+                { key: 'current', label: 'Current Password',  placeholder: 'Enter current password' },
+                { key: 'newPw',   label: 'New Password',      placeholder: 'At least 6 characters' },
+                { key: 'confirm', label: 'Confirm New Password', placeholder: 'Repeat new password' },
+              ].map(({ key, label, placeholder }) => (
+                <Field key={key} label={label}>
+                  <div className="relative">
+                    <input
+                      type={showPw[key] ? 'text' : 'password'}
+                      placeholder={placeholder}
+                      value={pwForm[key]}
+                      onChange={e => setPwForm(f => ({ ...f, [key]: e.target.value }))}
+                      className={`${inputCls} pr-10`}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPw(s => ({ ...s, [key]: !s[key] }))}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                    >
+                      {showPw[key] ? <EyeOff size={15} /> : <Eye size={15} />}
+                    </button>
+                  </div>
+                </Field>
+              ))}
+
+              <button
+                onClick={savePassword}
+                disabled={pwSaving}
+                className="flex items-center gap-2 px-5 py-2.5 bg-gray-900 hover:bg-gray-700 text-white rounded-xl text-sm font-semibold transition-all disabled:opacity-60"
+              >
+                <ShieldCheck size={15} />
+                {pwSaving ? 'Saving...' : 'Update Password'}
+              </button>
             </div>
           )}
 

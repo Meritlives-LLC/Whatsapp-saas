@@ -200,7 +200,58 @@ exports.cancel = async (req, res) => {
 };
 
 /**
- * POST /api/subscription/webhook — handle Paystack subscription events
+ * POST /api/subscription/reactivate — undo a pending cancellation
+ */
+exports.reactivate = async (req, res) => {
+  try {
+    const sub = await Subscription.findOne({ business: req.user.business._id });
+    if (!sub) return res.status(404).json({ success: false, message: 'No subscription found' });
+    if (!sub.cancelAtPeriodEnd) {
+      return res.status(400).json({ success: false, message: 'Subscription is not scheduled for cancellation' });
+    }
+
+    // Re-enable on Paystack if we have the codes
+    if (sub.paystackSubscriptionCode && sub.paystackEmailToken) {
+      await axios.post(
+        'https://api.paystack.co/subscription/enable',
+        { code: sub.paystackSubscriptionCode, token: sub.paystackEmailToken },
+        { headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}` } }
+      ).catch(err => logger.error(`Paystack reactivate error: ${err.message}`));
+    }
+
+    sub.cancelAtPeriodEnd = false;
+    await sub.save();
+
+    res.json({ success: true, message: 'Subscription reactivated. Billing will continue as normal.' });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+/**
+ * GET /api/subscription/history — last payment records from subscription model
+ */
+exports.getBillingHistory = async (req, res) => {
+  try {
+    const sub = await Subscription.findOne({ business: req.user.business._id });
+    if (!sub) return res.json({ success: true, data: [] });
+
+    const history = [];
+    if (sub.lastPaymentAt && sub.lastPaymentAmount) {
+      history.push({
+        date: sub.lastPaymentAt,
+        amount: sub.lastPaymentAmount,
+        plan: sub.plan,
+        status: 'paid',
+        description: `${sub.plan.charAt(0).toUpperCase() + sub.plan.slice(1)} plan — monthly subscription`,
+      });
+    }
+
+    res.json({ success: true, data: history });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
  * Route uses express.raw() so req.body is a Buffer — must use .toString() for HMAC
  */
 exports.paystackWebhook = async (req, res) => {

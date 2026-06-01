@@ -27,6 +27,7 @@ router.post('/auth/logout',                 authCtrl.logout);
 router.get('/auth/me',                      protect, checkActive, authCtrl.getMe);
 router.post('/auth/forgot-password',        passwordResetLimiter, authCtrl.forgotPassword);
 router.patch('/auth/reset-password/:token', authCtrl.resetPassword);
+router.post('/auth/change-password',        protect, authCtrl.changePassword);
 
 router.use('/meta', metaRoutes);
 
@@ -35,11 +36,13 @@ router.post('/subscription/webhook', express.raw({ type: 'application/json' }), 
 router.post('/payments/webhook',     express.raw({ type: 'application/json' }), bizCtrl.paystackWebhook);
 
 // ── SUBSCRIPTION ──────────────────────────────────────────────────────────────
-router.get('/subscription/plans',    subCtrl.getPlans);
-router.get('/subscription',          protect, checkActive, attachSubscription, subCtrl.getSubscription);
-router.post('/subscription/upgrade', protect, checkActive, attachSubscription, subCtrl.upgrade);
-router.post('/subscription/verify',  protect, checkActive, attachSubscription, subCtrl.verifyUpgrade);
-router.post('/subscription/cancel',  protect, checkActive, attachSubscription, subCtrl.cancel);
+router.get('/subscription/plans',        subCtrl.getPlans);
+router.get('/subscription/history',      protect, checkActive, attachSubscription, subCtrl.getBillingHistory);
+router.get('/subscription',              protect, checkActive, attachSubscription, subCtrl.getSubscription);
+router.post('/subscription/upgrade',     protect, checkActive, attachSubscription, subCtrl.upgrade);
+router.post('/subscription/verify',      protect, checkActive, attachSubscription, subCtrl.verifyUpgrade);
+router.post('/subscription/cancel',      protect, checkActive, attachSubscription, subCtrl.cancel);
+router.post('/subscription/reactivate',  protect, checkActive, attachSubscription, subCtrl.reactivate);
 
 // ── BUSINESS ──────────────────────────────────────────────────────────────────
 router.get('/business', protect, checkActive, bizCtrl.getBusiness);

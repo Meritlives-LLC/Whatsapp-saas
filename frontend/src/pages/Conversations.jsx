@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
-import { Send, Search, CheckCheck, Bot, User, Phone, ArrowLeft } from 'lucide-react';
+import { Send, Search, CheckCheck, Bot, User, Phone, ArrowLeft, Wifi } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import api from '../utils/api';
 import { useSocket } from '../hooks/useSocket';
 import { formatDistanceToNow, format } from 'date-fns';
@@ -113,8 +114,25 @@ export default function Conversations() {
               </div>
             </button>
           ))}
-          {!filtered.length && (
-            <p className="text-center text-sm text-gray-400 py-8">No conversations</p>
+          {!filtered.length && conversations.length === 0 && (
+            <div className="text-center py-12 px-4">
+              <div className="w-14 h-14 bg-green-50 rounded-2xl flex items-center justify-center mx-auto mb-3">
+                <Wifi size={24} className="text-green-400" />
+              </div>
+              <p className="text-sm font-semibold text-gray-700 mb-1">No conversations yet</p>
+              <p className="text-xs text-gray-400 mb-4 leading-relaxed">
+                Connect your WhatsApp number to start receiving messages from customers.
+              </p>
+              <Link
+                to="/connect-whatsapp"
+                className="inline-flex items-center gap-1.5 px-4 py-2 bg-green-500 hover:bg-green-600 text-white text-xs font-semibold rounded-xl transition-colors"
+              >
+                <Wifi size={13} /> Connect WhatsApp
+              </Link>
+            </div>
+          )}
+          {!filtered.length && conversations.length > 0 && (
+            <p className="text-center text-sm text-gray-400 py-8">No matching conversations</p>
           )}
         </div>
       </div>

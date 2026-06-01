@@ -69,7 +69,7 @@ const PLANS = [
     price: '₦0',
     period: 'forever',
     color: '#6b7280',
-    features: ['30 AI replies/month', '1 WhatsApp number', '5 products', 'Basic analytics'],
+    features: ['100 AI replies/month', '1 WhatsApp number', '5 products', 'Basic analytics'],
     cta: 'Start Free',
     highlight: false,
   },
@@ -712,7 +712,7 @@ export default function LandingPage() {
                   ))}
                 </ul>
 
-                <button onClick={() => navigate('/login')}
+                <button onClick={() => navigate('/pricing')}
                   style={{
                     width: '100%', padding: '12px', borderRadius: 12, border: 'none',
                     background: plan.highlight ? '#22c55e' : 'rgba(255,255,255,0.08)',

@@ -347,7 +347,17 @@ exports.getAnalytics = async (req, res) => {
   try {
     const businessId = req.user.business._id;
 
-    const [convStats, revenue, recentConvs, paymentBreakdown] = await Promise.all([
+    // Build date range for last 7 days
+    const days = [];
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      d.setHours(0, 0, 0, 0);
+      days.push(d);
+    }
+    const dayLabels = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+    const [convStats, revenue, recentConvs, paymentBreakdown, weeklyRaw] = await Promise.all([
       Conversation.aggregate([
         { $match: { business: businessId } },
         { $group: {
@@ -369,10 +379,26 @@ exports.getAnalytics = async (req, res) => {
         { $match: { business: businessId, status: 'success' } },
         { $group: { _id: '$paymentMethod', total: { $sum: '$amount' }, count: { $sum: 1 } } },
       ]),
+      // Weekly messages: count conversations created per day for last 7 days
+      Conversation.aggregate([
+        { $match: { business: businessId, createdAt: { $gte: days[0] } } },
+        { $group: {
+            _id: { $dayOfWeek: '$createdAt' }, // 1=Sun..7=Sat
+            messages: { $sum: 1 },
+        }},
+      ]),
     ]);
 
     const stats = convStats[0] || { total: 0, open: 0, closed: 0, leads: 0 };
     const revenueData = revenue[0] || { total: 0, count: 0 };
+
+    // Map weekly raw into ordered day array matching last 7 days
+    const weeklyMap = {};
+    weeklyRaw.forEach(r => { weeklyMap[r._id] = r.messages; });
+    const weeklyMessages = days.map(d => ({
+      day: dayLabels[d.getDay()],
+      messages: weeklyMap[d.getDay() + 1] || 0, // MongoDB dayOfWeek: 1=Sun
+    }));
 
     res.json({
       success: true,
@@ -382,6 +408,7 @@ exports.getAnalytics = async (req, res) => {
         conversionRate: stats.total > 0 ? ((stats.leads / stats.total) * 100).toFixed(1) : 0,
         recentConversations: recentConvs,
         paymentBreakdown,
+        weeklyMessages,
       },
     });
   } catch (err) {

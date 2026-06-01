@@ -230,3 +230,34 @@ exports.resetPassword = async (req, res) => {
     res.status(500).json({ success: false, message: 'Password reset failed.' });
   }
 };
+/**
+ * POST /api/auth/change-password — change password for logged-in user
+ */
+exports.changePassword = async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+    if (!newPassword || newPassword.length < 6) {
+      return res.status(400).json({ success: false, message: 'New password must be at least 6 characters.' });
+    }
+
+    const user = await User.findById(req.user._id).select('+password');
+    if (!user) return res.status(404).json({ success: false, message: 'User not found.' });
+
+    // If user has a password, verify current one
+    if (user.password) {
+      const bcrypt = require('bcryptjs');
+      const isMatch = await bcrypt.compare(currentPassword, user.password);
+      if (!isMatch) {
+        return res.status(400).json({ success: false, message: 'Current password is incorrect.' });
+      }
+    }
+
+    user.password = newPassword;
+    await user.save();
+    logger.info(`Password changed: ${user.email}`);
+    res.json({ success: true, message: 'Password updated successfully.' });
+  } catch (err) {
+    logger.error(`Change password error: ${err.message}`);
+    res.status(500).json({ success: false, message: 'Failed to change password.' });
+  }
+};

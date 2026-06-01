@@ -26,7 +26,7 @@ const bottomNavItems = [
   { to: '/', icon: LayoutDashboard, label: 'Home' },
   { to: '/conversations', icon: MessageSquare, label: 'Chats' },
   { to: '/products', icon: Package, label: 'Products' },
-  { to: '/payments', icon: CreditCard, label: 'Payments' },
+  { to: '/subscription', icon: Star, label: 'Plan' },
   { to: '/settings', icon: Settings, label: 'Settings' },
 ];
 
@@ -168,12 +168,16 @@ export default function Layout({ children }) {
         <div className="flex items-center justify-around px-2 py-2">
           {bottomNavItems.map(({ to, icon: Icon, label }) => {
             const active = pathname === to;
+            const showWarning = to === '/subscription' && (atLimit || nearLimit);
             return (
               <Link key={to} to={to}
-                className={`flex flex-col items-center gap-0.5 px-3 py-1.5 rounded-xl transition-colors ${
+                className={`flex flex-col items-center gap-0.5 px-3 py-1.5 rounded-xl transition-colors relative ${
                   active ? "text-green-600" : "text-gray-400"
                 }`}>
                 <Icon size={20} strokeWidth={active ? 2.5 : 1.8} />
+                {showWarning && (
+                  <span className={`absolute top-1 right-2 w-2 h-2 rounded-full ${atLimit ? 'bg-red-500' : 'bg-amber-400'}`} />
+                )}
                 <span className="text-[10px] font-medium">{label}</span>
               </Link>
             );

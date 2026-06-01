@@ -18,10 +18,11 @@ const PLAN_ORDER = ['free', 'starter', 'growth', 'pro'];
 export default function Pricing() {
   const { user } = useAuth();
   const navigate = useNavigate();
-  const [plans, setPlans]       = useState(null);   // null = loading
-  const [currency, setCurrency] = useState('NGN');
-  const [currSym, setCurrSym]   = useState('₦');
-  const [loading, setLoading]   = useState(null);   // plan id being redirected
+  const [plans, setPlans]           = useState(null);
+  const [currency, setCurrency]     = useState('NGN');
+  const [currSym, setCurrSym]       = useState('₦');
+  const [loading, setLoading]       = useState(null);
+  const [currentPlan, setCurrentPlan] = useState(null);
 
   useEffect(() => {
     api.get('/subscription/plans')
@@ -33,7 +34,6 @@ export default function Pricing() {
         setCurrSym(sym);
       })
       .catch(() => {
-        // Fallback static data if API unreachable (public page, user may not be logged in)
         setPlans({
           free:    { id: 'free',    name: 'Free',    price: 0,     displayPrice: 0,     features: ['100 AI replies / month', '1 WhatsApp number', 'Up to 5 products', 'Basic analytics', 'Paystack payments'] },
           starter: { id: 'starter', name: 'Starter', price: 8000,  displayPrice: 8000,  features: ['1,000 AI replies / month', '1 WhatsApp number', 'Up to 50 products', 'Full analytics', 'Bookings & reminders', 'Auto follow-up', 'Lead capture', 'Email support'] },
@@ -41,11 +41,19 @@ export default function Pricing() {
           pro:     { id: 'pro',     name: 'Pro',     price: 45000, displayPrice: 45000, features: ['Unlimited AI replies', 'Up to 10 WhatsApp numbers', 'Unlimited products & team', 'White-label dashboard', 'All Growth features', 'Dedicated support', 'SLA guarantee'] },
         });
       });
-  }, []);
+
+    // Fetch current plan for logged-in users
+    if (user) {
+      api.get('/subscription')
+        .then(({ data }) => setCurrentPlan(data.data?.plan || 'free'))
+        .catch(() => {});
+    }
+  }, [user]);
 
   const handleUpgrade = async (planId) => {
     if (!user) { navigate('/login'); return; }
-    if (planId === 'free') { navigate('/'); return; }
+    if (planId === 'free') { navigate('/subscription'); return; }
+    if (planId === currentPlan) { navigate('/subscription'); return; }
     setLoading(planId);
     try {
       const { data } = await api.post('/subscription/upgrade', { planId });
@@ -66,6 +74,17 @@ export default function Pricing() {
   const ngnNote = currency !== 'NGN'
     ? <p className="text-xs text-gray-400 mt-1">Payments processed in ₦ NGN via Paystack</p>
     : null;
+
+  const getCtaLabel = (planId) => {
+    if (planId === currentPlan) return '✓ Current plan';
+    if (planId === 'free') return user ? 'Free tier' : 'Get started free';
+    return `Upgrade to ${plans[planId]?.name}`;
+  };
+
+  const getCtaStyle = (planId, style) => {
+    if (planId === currentPlan) return 'bg-gray-100 text-gray-500 cursor-default';
+    return style.cta;
+  };
 
   return (
     <div className="min-h-screen bg-gray-50 font-sans py-10 md:py-16 px-4">
@@ -88,14 +107,22 @@ export default function Pricing() {
               if (!plan) return null;
               const style = PLAN_STYLES[planId];
               const price = formatPrice(plan);
+              const isCurrent = planId === currentPlan;
 
               return (
                 <div key={planId}
-                  className={`relative bg-white rounded-2xl border-2 ${style.color} p-5 md:p-6 flex flex-col ${plan.popular ? 'shadow-lg' : 'shadow-sm'}`}>
-                  {plan.popular && (
+                  className={`relative bg-white rounded-2xl border-2 ${isCurrent ? 'border-green-400 ring-2 ring-green-100' : style.color} p-5 md:p-6 flex flex-col ${plan.popular ? 'shadow-lg' : 'shadow-sm'}`}>
+                  {plan.popular && !isCurrent && (
                     <div className="absolute -top-3 left-1/2 -translate-x-1/2">
                       <span className="flex items-center gap-1 bg-green-500 text-white text-xs font-semibold px-3 py-1 rounded-full">
                         <Star size={10} /> Most popular
+                      </span>
+                    </div>
+                  )}
+                  {isCurrent && (
+                    <div className="absolute -top-3 left-1/2 -translate-x-1/2">
+                      <span className="text-xs px-3 py-1 rounded-full bg-gray-900 text-white font-semibold whitespace-nowrap">
+                        Current plan
                       </span>
                     </div>
                   )}
@@ -120,9 +147,12 @@ export default function Pricing() {
                       </li>
                     ))}
                   </ul>
-                  <button onClick={() => handleUpgrade(planId)} disabled={loading === planId}
-                    className={`w-full py-2.5 rounded-xl text-sm font-semibold transition-colors disabled:opacity-60 ${style.cta}`}>
-                    {loading === planId ? 'Redirecting...' : planId === 'free' ? 'Get started free' : `Upgrade to ${plan.name}`}
+                  <button
+                    onClick={() => handleUpgrade(planId)}
+                    disabled={loading === planId || isCurrent}
+                    className={`w-full py-2.5 rounded-xl text-sm font-semibold transition-colors disabled:opacity-60 ${getCtaStyle(planId, style)}`}
+                  >
+                    {loading === planId ? 'Redirecting...' : getCtaLabel(planId)}
                   </button>
                 </div>
               );

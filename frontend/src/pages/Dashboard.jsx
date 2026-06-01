@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { MessageSquare, Users, TrendingUp, DollarSign, CheckCircle, Clock, ArrowUpRight } from 'lucide-react';
+import { MessageSquare, Users, TrendingUp, DollarSign, CheckCircle, Clock, ArrowUpRight, AlertTriangle, RefreshCw } from 'lucide-react';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import api from '../utils/api';
 import { useAuth } from '../context/AuthContext';
@@ -20,13 +20,6 @@ const StatCard = ({ label, value, icon: Icon, color, change }) => (
   </div>
 );
 
-const chartData = [
-  { day: 'Mon', messages: 12 }, { day: 'Tue', messages: 28 },
-  { day: 'Wed', messages: 19 }, { day: 'Thu', messages: 45 },
-  { day: 'Fri', messages: 38 }, { day: 'Sat', messages: 22 },
-  { day: 'Sun', messages: 14 },
-];
-
 const getGreeting = () => {
   const h = new Date().getHours();
   if (h < 12) return { text: 'Good morning', emoji: '🌅' };
@@ -37,18 +30,43 @@ const getGreeting = () => {
 
 export default function Dashboard() {
   const [analytics, setAnalytics] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [chartData, setChartData] = useState([]);
+  const [loading, setLoading]     = useState(true);
+  const [error, setError]         = useState(null);
+  const [currSym, setCurrSym]     = useState('₦');
   const { business } = useAuth();
 
-  // ALL hooks at the top — before any early return
   const [greeting, setGreeting] = useState(getGreeting);
-  const [clock, setClock] = useState(() => new Date());
+  const [clock, setClock]       = useState(() => new Date());
 
-  useEffect(() => {
-    api.get('/analytics')
-      .then(({ data }) => setAnalytics(data.data))
+  const load = () => {
+    setLoading(true);
+    setError(null);
+    Promise.all([
+      api.get('/analytics'),
+      api.get('/subscription/plans').catch(() => null),
+    ])
+      .then(([analyticsRes, plansRes]) => {
+        const data = analyticsRes.data.data;
+        setAnalytics(data);
+        // Build weekly chart from real data if available, fallback to empty days
+        const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+        if (data.weeklyMessages && Array.isArray(data.weeklyMessages)) {
+          setChartData(data.weeklyMessages);
+        } else {
+          // Seed skeleton with zeros so chart axes still render properly
+          setChartData(days.map(day => ({ day, messages: 0 })));
+        }
+        if (plansRes) {
+          const sym = Object.values(plansRes.data.data).find(p => p.currencySymbol)?.currencySymbol || '₦';
+          setCurrSym(sym);
+        }
+      })
+      .catch(() => setError('Could not load dashboard data. Check your connection.'))
       .finally(() => setLoading(false));
-  }, []);
+  };
+
+  useEffect(() => { load(); }, []);
 
   useEffect(() => {
     const tick = setInterval(() => {
@@ -66,6 +84,21 @@ export default function Dashboard() {
   if (loading) return (
     <div className="p-8 flex items-center justify-center h-full">
       <div className="w-8 h-8 border-2 border-green-500 border-t-transparent rounded-full animate-spin" />
+    </div>
+  );
+
+  if (error) return (
+    <div className="p-8 flex flex-col items-center justify-center h-full gap-4">
+      <div className="w-12 h-12 bg-red-50 rounded-2xl flex items-center justify-center">
+        <AlertTriangle size={22} className="text-red-400" />
+      </div>
+      <p className="text-sm text-gray-600 text-center max-w-xs">{error}</p>
+      <button
+        onClick={load}
+        className="flex items-center gap-2 px-4 py-2 bg-gray-900 text-white text-sm font-semibold rounded-xl hover:bg-gray-700 transition-colors"
+      >
+        <RefreshCw size={14} /> Retry
+      </button>
     </div>
   );
 
@@ -87,7 +120,7 @@ export default function Dashboard() {
         <StatCard label="Total Conversations" value={stats.total || 0} icon={MessageSquare} color="bg-blue-500" />
         <StatCard label="Active Leads" value={stats.leads || 0} icon={Users} color="bg-purple-500" />
         <StatCard label="Conversion Rate" value={`${analytics?.conversionRate || 0}%`} icon={TrendingUp} color="bg-green-500" />
-        <StatCard label="Revenue (NGN)" value={`₦${(revenue.total || 0).toLocaleString()}`} icon={DollarSign} color="bg-amber-500" />
+        <StatCard label="Revenue" value={`${currSym}${(revenue.total || 0).toLocaleString()}`} icon={DollarSign} color="bg-amber-500" />
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-6">
