@@ -345,80 +345,102 @@ exports.getTransactions = async (req, res) => {
 // ─── ANALYTICS ────────────────────────────────────────────────────────────────
 exports.getAnalytics = async (req, res) => {
   try {
-    const businessId = req.user.business._id;
+    const mongoose = require('mongoose');
 
-    // Last 7 days date boundary — use lastMessageAt (indexed) for weekly query
+    // Guard against missing business
+    if (!req.user?.business?._id) {
+      return res.status(400).json({ success: false, message: 'No business associated with this account.' });
+    }
+    const businessId = new mongoose.Types.ObjectId(String(req.user.business._id));
+
+    // Helper: run an aggregation safely, return [] on any error
+    const safeAggregate = async (model, pipeline, label) => {
+      try {
+        return await model.aggregate(pipeline);
+      } catch (err) {
+        logger.error(`getAnalytics aggregate [${label}] error: ${err.message}`);
+        return [];
+      }
+    };
+
+    // Last 7 days boundary (uses indexed lastMessageAt field)
     const now = new Date();
     const sevenDaysAgo = new Date(now);
     sevenDaysAgo.setDate(now.getDate() - 6);
     sevenDaysAgo.setHours(0, 0, 0, 0);
 
-    const [convStats, revenue, recentConvs, paymentBreakdown, weeklyRaw] = await Promise.all([
-      Conversation.aggregate([
+    const [convStatsRaw, revenueRaw, recentConvs, paymentBreakdown, weeklyRaw] = await Promise.all([
+      safeAggregate(Conversation, [
         { $match: { business: businessId } },
         { $group: {
             _id: null,
-            total: { $sum: 1 },
-            open:   { $sum: { $cond: [{ $eq: ['$status', 'open'] }, 1, 0] } },
+            total:  { $sum: 1 },
+            open:   { $sum: { $cond: [{ $eq: ['$status', 'open'] },   1, 0] } },
             closed: { $sum: { $cond: [{ $eq: ['$status', 'closed'] }, 1, 0] } },
-            leads:  { $sum: { $cond: ['$isLead', 1, 0] } },
+            leads:  { $sum: { $cond: [{ $eq: ['$isLead', true] },     1, 0] } },
         }},
-      ]),
-      Transaction.aggregate([
+      ], 'convStats'),
+
+      safeAggregate(Transaction, [
         { $match: { business: businessId, status: 'success' } },
         { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } },
-      ]),
+      ], 'revenue'),
+
       Conversation.find({ business: businessId })
-        .sort({ lastMessageAt: -1 }).limit(7)
-        .select('customerName customerPhone status lastMessageAt isLead'),
-      Transaction.aggregate([
+        .sort({ lastMessageAt: -1 })
+        .limit(7)
+        .select('customerName customerPhone status lastMessageAt isLead')
+        .lean()
+        .catch(err => { logger.error(`getAnalytics recentConvs error: ${err.message}`); return []; }),
+
+      safeAggregate(Transaction, [
         { $match: { business: businessId, status: 'success' } },
         { $group: { _id: '$paymentMethod', total: { $sum: '$amount' }, count: { $sum: 1 } } },
-      ]),
-      // Weekly activity: group by exact calendar date using indexed lastMessageAt
-      Conversation.aggregate([
+      ], 'paymentBreakdown'),
+
+      safeAggregate(Conversation, [
         { $match: { business: businessId, lastMessageAt: { $gte: sevenDaysAgo } } },
         { $group: {
             _id: {
-              year:  { $year: '$lastMessageAt' },
+              year:  { $year:  '$lastMessageAt' },
               month: { $month: '$lastMessageAt' },
               day:   { $dayOfMonth: '$lastMessageAt' },
             },
             messages: { $sum: 1 },
         }},
-      ]).catch(() => []),
+      ], 'weeklyMessages'),
     ]);
 
-    const stats = convStats[0] || { total: 0, open: 0, closed: 0, leads: 0 };
-    const revenueData = revenue[0] || { total: 0, count: 0 };
+    const stats       = convStatsRaw[0] || { total: 0, open: 0, closed: 0, leads: 0 };
+    const revenueData = revenueRaw[0]   || { total: 0, count: 0 };
 
-    // Build accurate 7-day array keyed by "YYYY-M-D"
+    // Build accurate 7-day chart array
     const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-    const weeklyMap = {};
-    (weeklyRaw || []).forEach(r => {
-      weeklyMap[`${r._id.year}-${r._id.month}-${r._id.day}`] = r.messages;
+    const weeklyMap  = {};
+    weeklyRaw.forEach(r => {
+      if (r._id) weeklyMap[`${r._id.year}-${r._id.month}-${r._id.day}`] = r.messages;
     });
     const weeklyMessages = [];
     for (let i = 6; i >= 0; i--) {
-      const d = new Date(now);
+      const d   = new Date(now);
       d.setDate(now.getDate() - i);
       const key = `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
       weeklyMessages.push({ day: DAY_LABELS[d.getDay()], messages: weeklyMap[key] || 0 });
     }
 
-    res.json({
+    return res.json({
       success: true,
       data: {
-        conversations: stats,
-        revenue: revenueData,
-        conversionRate: stats.total > 0 ? ((stats.leads / stats.total) * 100).toFixed(1) : 0,
+        conversations:       stats,
+        revenue:             revenueData,
+        conversionRate:      stats.total > 0 ? parseFloat(((stats.leads / stats.total) * 100).toFixed(1)) : 0,
         recentConversations: recentConvs,
         paymentBreakdown,
         weeklyMessages,
       },
     });
   } catch (err) {
-    logger.error(`getAnalytics error: ${err.message}`);
-    res.status(500).json({ success: false, message: err.message });
+    logger.error(`getAnalytics fatal error: ${err.message}\n${err.stack}`);
+    return res.status(500).json({ success: false, message: err.message });
   }
 };
