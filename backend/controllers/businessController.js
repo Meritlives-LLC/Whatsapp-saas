@@ -7,20 +7,29 @@ const logger = require('../config/logger');
 const Subscription = require('../models/Subscription');
 const { getPlan } = require('../config/plans');
 
+// ─── Helper: safely get businessId ───────────────────────────────────────────
+const getBizId = (req) => {
+  try { return req.user?.business?._id || null; }
+  catch { return null; }
+};
+
 // ─── BUSINESS ────────────────────────────────────────────────────────────────
 exports.getBusiness = async (req, res) => {
   try {
-    const business = await Business.findById(req.user.business._id);
+    const bizId = getBizId(req);
+    if (!bizId) return res.status(400).json({ success: false, message: 'No business on this account.' });
+    const business = await Business.findById(bizId);
     res.json({ success: true, data: business });
   } catch (err) {
+    logger.error(`getBusiness: ${err.message}`);
     res.status(500).json({ success: false, message: err.message });
   }
 };
 
 exports.updateBusiness = async (req, res) => {
   try {
-    // Whitelist: only allow safe fields. Never let users touch owner, isActive, or WhatsApp tokens here.
-    // whatsappAccessToken is intentionally excluded — it must only be written by the Meta OAuth callback.
+    const bizId = getBizId(req);
+    if (!bizId) return res.status(400).json({ success: false, message: 'No business on this account.' });
     const ALLOWED = [
       'name', 'description', 'phone', 'email', 'website', 'industry',
       'aiKnowledge', 'settings',
@@ -31,12 +40,11 @@ exports.updateBusiness = async (req, res) => {
       if (req.body[key] !== undefined) update[key] = req.body[key];
     }
     const business = await Business.findByIdAndUpdate(
-      req.user.business._id,
-      { $set: update },
-      { new: true, runValidators: true }
+      bizId, { $set: update }, { new: true, runValidators: true }
     );
     res.json({ success: true, data: business });
   } catch (err) {
+    logger.error(`updateBusiness: ${err.message}`);
     res.status(500).json({ success: false, message: err.message });
   }
 };
@@ -44,7 +52,9 @@ exports.updateBusiness = async (req, res) => {
 // ─── PRODUCTS ─────────────────────────────────────────────────────────────────
 exports.getProducts = async (req, res) => {
   try {
-    const products = await Product.find({ business: req.user.business._id }).sort({ createdAt: -1 });
+    const bizId = getBizId(req);
+    if (!bizId) return res.json({ success: true, data: [] });
+    const products = await Product.find({ business: bizId }).sort({ createdAt: -1 });
     res.json({ success: true, data: products });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -53,10 +63,11 @@ exports.getProducts = async (req, res) => {
 
 exports.createProduct = async (req, res) => {
   try {
-    // Enforce plan product limit
-    const sub = await Subscription.findOne({ business: req.user.business._id });
+    const bizId = getBizId(req);
+    if (!bizId) return res.status(400).json({ success: false, message: 'No business on this account.' });
+    const sub = await Subscription.findOne({ business: bizId });
     const plan = getPlan(sub?.plan || 'free');
-    const productCount = await Product.countDocuments({ business: req.user.business._id });
+    const productCount = await Product.countDocuments({ business: bizId });
     if (productCount >= plan.limits.products) {
       return res.status(403).json({
         success: false,
@@ -64,7 +75,7 @@ exports.createProduct = async (req, res) => {
         upgradeRequired: true,
       });
     }
-    const product = await Product.create({ ...req.body, business: req.user.business._id });
+    const product = await Product.create({ ...req.body, business: bizId });
     res.status(201).json({ success: true, data: product });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -73,9 +84,10 @@ exports.createProduct = async (req, res) => {
 
 exports.updateProduct = async (req, res) => {
   try {
+    const bizId = getBizId(req);
+    if (!bizId) return res.status(400).json({ success: false, message: 'No business on this account.' });
     const product = await Product.findOneAndUpdate(
-      { _id: req.params.id, business: req.user.business._id },
-      req.body, { new: true }
+      { _id: req.params.id, business: bizId }, req.body, { new: true }
     );
     res.json({ success: true, data: product });
   } catch (err) {
@@ -85,7 +97,9 @@ exports.updateProduct = async (req, res) => {
 
 exports.deleteProduct = async (req, res) => {
   try {
-    await Product.findOneAndDelete({ _id: req.params.id, business: req.user.business._id });
+    const bizId = getBizId(req);
+    if (!bizId) return res.status(400).json({ success: false, message: 'No business on this account.' });
+    await Product.findOneAndDelete({ _id: req.params.id, business: bizId });
     res.json({ success: true, message: 'Product deleted' });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -95,7 +109,9 @@ exports.deleteProduct = async (req, res) => {
 // ─── APPOINTMENTS ──────────────────────────────────────────────────────────────
 exports.getAppointments = async (req, res) => {
   try {
-    const appointments = await Appointment.find({ business: req.user.business._id }).sort({ scheduledAt: 1 });
+    const bizId = getBizId(req);
+    if (!bizId) return res.json({ success: true, data: [] });
+    const appointments = await Appointment.find({ business: bizId }).sort({ scheduledAt: 1 });
     res.json({ success: true, data: appointments });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -104,9 +120,10 @@ exports.getAppointments = async (req, res) => {
 
 exports.updateAppointment = async (req, res) => {
   try {
+    const bizId = getBizId(req);
+    if (!bizId) return res.status(400).json({ success: false, message: 'No business on this account.' });
     const appointment = await Appointment.findOneAndUpdate(
-      { _id: req.params.id, business: req.user.business._id },
-      req.body, { new: true }
+      { _id: req.params.id, business: bizId }, req.body, { new: true }
     );
     res.json({ success: true, data: appointment });
   } catch (err) {
@@ -114,75 +131,81 @@ exports.updateAppointment = async (req, res) => {
   }
 };
 
-// ─── PAYMENTS — Card ──────────────────────────────────────────────────────────
+// ─── PAYMENTS — Create Link ───────────────────────────────────────────────────
 exports.createPaymentLink = async (req, res) => {
   try {
-    const { customerEmail, amount, customerName, productId, conversationId, paymentMethod } = req.body;
+    const bizId = getBizId(req);
+    if (!bizId) return res.status(400).json({ success: false, message: 'No business on this account.' });
 
+    const { customerEmail, amount, customerName, productId, conversationId, paymentMethod } = req.body;
     if (!customerEmail || !amount) {
       return res.status(400).json({ success: false, message: 'Customer email and amount are required' });
     }
 
-    const reference = paystackService.generateReference('WA');
+    const parsedAmount = parseFloat(amount);
+    if (isNaN(parsedAmount) || parsedAmount <= 0) {
+      return res.status(400).json({ success: false, message: 'Amount must be a valid positive number' });
+    }
 
-    // Choose payment method
+    const reference = paystackService.generateReference('WA');
     let result;
     let resolvedMethod;
+
     if (paymentMethod === 'bank_transfer') {
       result = await paystackService.initializeBankTransfer({
-        email: customerEmail, amount, reference,
+        email: customerEmail, amount: parsedAmount, reference,
         customerName,
-        metadata: { customerName, businessId: req.user.business._id, productId },
+        metadata: { customerName, businessId: bizId, productId },
       });
       resolvedMethod = 'bank_transfer';
     } else if (paymentMethod === 'card') {
-      // Card only — restrict channels to card
       result = await paystackService.initializePayment({
-        email: customerEmail, amount, reference,
-        metadata: { customerName, businessId: req.user.business._id, productId },
+        email: customerEmail, amount: parsedAmount, reference,
+        metadata: { customerName, businessId: bizId, productId },
         channels: ['card'],
       });
       resolvedMethod = 'card';
     } else {
-      // Default: all channels (card + bank transfer + USSD etc.)
       result = await paystackService.initializeAllChannels({
-        email: customerEmail, amount, reference,
-        metadata: { customerName, businessId: req.user.business._id, productId },
+        email: customerEmail, amount: parsedAmount, reference,
+        metadata: { customerName, businessId: bizId, productId },
       });
-      resolvedMethod = 'card'; // default label
+      resolvedMethod = 'card';
     }
 
     await Transaction.create({
-      business: req.user.business._id,
+      business: bizId,
       conversation: conversationId || null,
-      customerEmail, customerName, amount, reference,
+      customerEmail, customerName, amount: parsedAmount, reference,
       paystackReference: result.reference,
       paymentLink: result.authorization_url,
       paymentMethod: resolvedMethod,
       product: productId || null,
     });
 
-    logger.info(`Payment link created: ${reference} ₦${amount} for ${customerEmail}`);
-    res.json({ success: true, data: { paymentLink: result.authorization_url, reference } });
+    logger.info(`Payment link created: ${reference} ₦${parsedAmount} for ${customerEmail}`);
+    if (!res.headersSent) {
+      res.json({ success: true, data: { paymentLink: result.authorization_url, reference } });
+    }
   } catch (err) {
-    logger.error(`Create payment link error: ${err.message}`);
-    res.status(500).json({ success: false, message: err.message });
+    logger.error(`createPaymentLink: ${err.message}\n${err.stack}`);
+    if (!res.headersSent) {
+      res.status(500).json({ success: false, message: 'Payment link creation failed. Check your Paystack configuration.' });
+    }
   }
 };
 
 // ─── PAYMENTS — Bank Transfer specific ───────────────────────────────────────
-
-/** Get list of Nigerian banks */
 exports.getBanks = async (req, res) => {
   try {
     const banks = await paystackService.getBanks();
     res.json({ success: true, data: banks });
   } catch (err) {
+    logger.error(`getBanks: ${err.message}`);
     res.status(500).json({ success: false, message: 'Could not fetch banks. Try again.' });
   }
 };
 
-/** Verify customer bank account (name lookup) */
 exports.verifyBankAccount = async (req, res) => {
   try {
     const { accountNumber, bankCode } = req.query;
@@ -196,16 +219,16 @@ exports.verifyBankAccount = async (req, res) => {
   }
 };
 
-/** Save business payout bank account */
 exports.saveBankAccount = async (req, res) => {
   try {
-    const { accountName, accountNumber, bankCode, bankName, isDefault } = req.body;
+    const bizId = getBizId(req);
+    if (!bizId) return res.status(400).json({ success: false, message: 'No business on this account.' });
 
+    const { accountName, accountNumber, bankCode, bankName, isDefault } = req.body;
     if (!accountName || !accountNumber || !bankCode || !bankName) {
       return res.status(400).json({ success: false, message: 'All bank account fields are required' });
     }
 
-    // Create Paystack recipient for future payouts
     let recipientCode = null;
     try {
       const recipient = await paystackService.createTransferRecipient({ accountName, accountNumber, bankCode });
@@ -214,13 +237,12 @@ exports.saveBankAccount = async (req, res) => {
       logger.warn(`Could not create Paystack recipient: ${e.message}`);
     }
 
-    // If setting as default, unset others
     if (isDefault) {
-      await BankAccount.updateMany({ business: req.user.business._id }, { isDefault: false });
+      await BankAccount.updateMany({ business: bizId }, { isDefault: false });
     }
 
     const account = await BankAccount.create({
-      business: req.user.business._id,
+      business: bizId,
       accountName, accountNumber, bankCode, bankName,
       recipientCode, isDefault: !!isDefault,
     });
@@ -231,23 +253,24 @@ exports.saveBankAccount = async (req, res) => {
   }
 };
 
-/** Get saved bank accounts */
 exports.getBankAccounts = async (req, res) => {
   try {
-    const accounts = await BankAccount.find({ business: req.user.business._id }).sort({ isDefault: -1, createdAt: -1 });
+    const bizId = getBizId(req);
+    if (!bizId) return res.json({ success: true, data: [] });
+    const accounts = await BankAccount.find({ business: bizId }).sort({ isDefault: -1, createdAt: -1 });
     res.json({ success: true, data: accounts });
   } catch (err) {
+    logger.error(`getBankAccounts: ${err.message}`);
     res.status(500).json({ success: false, message: err.message });
   }
 };
 
-/** Delete a saved bank account */
 exports.deleteBankAccount = async (req, res) => {
   try {
-    const deleted = await BankAccount.findOneAndDelete({ _id: req.params.id, business: req.user.business._id });
-    if (!deleted) {
-      return res.status(404).json({ success: false, message: 'Bank account not found' });
-    }
+    const bizId = getBizId(req);
+    if (!bizId) return res.status(400).json({ success: false, message: 'No business on this account.' });
+    const deleted = await BankAccount.findOneAndDelete({ _id: req.params.id, business: bizId });
+    if (!deleted) return res.status(404).json({ success: false, message: 'Bank account not found' });
     res.json({ success: true, message: 'Bank account removed' });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -258,47 +281,36 @@ exports.deleteBankAccount = async (req, res) => {
 exports.paystackWebhook = async (req, res) => {
   try {
     const signature = req.headers['x-paystack-signature'];
-    const rawBody = req.body; // raw buffer from express.raw()
+    const rawBody = req.body;
 
     if (!paystackService.validateWebhookSignature(rawBody, signature)) {
       logger.warn('Paystack webhook: invalid signature');
       return res.status(401).send('Invalid signature');
     }
 
-    // Parse body (it's a Buffer from express.raw)
     const payload = JSON.parse(rawBody.toString());
     const { event, data } = payload;
 
-    // Idempotency — don't process same ref twice
     const webhookRef = data.reference || data.subscription_code || data.transfer_code || JSON.stringify(data).slice(0, 40);
     if (paystackService.isAlreadyProcessed(webhookRef)) {
       logger.info(`Webhook duplicate skipped: ${webhookRef}`);
       return res.status(200).send('OK');
     }
 
-    res.status(200).send('OK'); // respond immediately
-
+    res.status(200).send('OK');
     logger.info(`Paystack webhook: ${event} — ${data.reference}`);
 
     if (event === 'charge.success') {
       const tx = await Transaction.findOneAndUpdate(
         { reference: data.reference },
-        {
-          status: 'success',
-          paidAt: new Date(),
-          paymentMethod: data.channel || 'card',
-          metadata: data,
-        },
+        { status: 'success', paidAt: new Date(), paymentMethod: data.channel || 'card', metadata: data },
         { new: true }
       ).populate('business');
 
       if (tx?.customerEmail && tx?.business) {
-        // Send payment receipt email
         await emailService.sendPaymentReceiptEmail(
           { email: tx.customerEmail, name: tx.customerName },
-          tx.amount,
-          tx.reference,
-          tx.business.name
+          tx.amount, tx.reference, tx.business.name
         ).catch(() => {});
       }
     }
@@ -313,17 +325,19 @@ exports.paystackWebhook = async (req, res) => {
     if (event === 'transfer.success') {
       logger.info(`Transfer successful: ${data.reference}`);
     }
-
   } catch (err) {
-    logger.error(`Paystack webhook error: ${err.message}`);
+    logger.error(`paystackWebhook: ${err.message}`);
   }
 };
 
 // ─── TRANSACTIONS ─────────────────────────────────────────────────────────────
 exports.getTransactions = async (req, res) => {
   try {
+    const bizId = getBizId(req);
+    if (!bizId) return res.json({ success: true, data: [], total: 0 });
+
     const { status, paymentMethod, page = 1, limit = 20 } = req.query;
-    const filter = { business: req.user.business._id };
+    const filter = { business: bizId };
     if (status) filter.status = status;
     if (paymentMethod) filter.paymentMethod = paymentMethod;
 
@@ -338,6 +352,7 @@ exports.getTransactions = async (req, res) => {
 
     res.json({ success: true, data: transactions, total });
   } catch (err) {
+    logger.error(`getTransactions: ${err.message}`);
     res.status(500).json({ success: false, message: err.message });
   }
 };
@@ -346,31 +361,36 @@ exports.getTransactions = async (req, res) => {
 exports.getAnalytics = async (req, res) => {
   try {
     const mongoose = require('mongoose');
+    const bizId = getBizId(req);
 
-    // Guard against missing business
-    if (!req.user?.business?._id) {
-      return res.status(400).json({ success: false, message: 'No business associated with this account.' });
+    if (!bizId) {
+      return res.json({
+        success: true,
+        data: {
+          conversations: { total: 0, open: 0, closed: 0, leads: 0 },
+          revenue: { total: 0, count: 0 },
+          conversionRate: 0,
+          recentConversations: [],
+          paymentBreakdown: [],
+          weeklyMessages: ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map(day => ({ day, messages: 0 })),
+        },
+      });
     }
-    const businessId = new mongoose.Types.ObjectId(String(req.user.business._id));
 
-    // Helper: run an aggregation safely, return [] on any error
-    const safeAggregate = async (model, pipeline, label) => {
-      try {
-        return await model.aggregate(pipeline);
-      } catch (err) {
-        logger.error(`getAnalytics aggregate [${label}] error: ${err.message}`);
-        return [];
-      }
+    const businessId = new mongoose.Types.ObjectId(String(bizId));
+
+    const safeAgg = async (model, pipeline, label) => {
+      try { return await model.aggregate(pipeline); }
+      catch (e) { logger.error(`analytics [${label}]: ${e.message}`); return []; }
     };
 
-    // Last 7 days boundary (uses indexed lastMessageAt field)
     const now = new Date();
     const sevenDaysAgo = new Date(now);
     sevenDaysAgo.setDate(now.getDate() - 6);
     sevenDaysAgo.setHours(0, 0, 0, 0);
 
     const [convStatsRaw, revenueRaw, recentConvs, paymentBreakdown, weeklyRaw] = await Promise.all([
-      safeAggregate(Conversation, [
+      safeAgg(Conversation, [
         { $match: { business: businessId } },
         { $group: {
             _id: null,
@@ -380,32 +400,23 @@ exports.getAnalytics = async (req, res) => {
             leads:  { $sum: { $cond: [{ $eq: ['$isLead', true] },     1, 0] } },
         }},
       ], 'convStats'),
-
-      safeAggregate(Transaction, [
+      safeAgg(Transaction, [
         { $match: { business: businessId, status: 'success' } },
         { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } },
       ], 'revenue'),
-
       Conversation.find({ business: businessId })
-        .sort({ lastMessageAt: -1 })
-        .limit(7)
+        .sort({ lastMessageAt: -1 }).limit(7)
         .select('customerName customerPhone status lastMessageAt isLead')
         .lean()
-        .catch(err => { logger.error(`getAnalytics recentConvs error: ${err.message}`); return []; }),
-
-      safeAggregate(Transaction, [
+        .catch(() => []),
+      safeAgg(Transaction, [
         { $match: { business: businessId, status: 'success' } },
         { $group: { _id: '$paymentMethod', total: { $sum: '$amount' }, count: { $sum: 1 } } },
       ], 'paymentBreakdown'),
-
-      safeAggregate(Conversation, [
+      safeAgg(Conversation, [
         { $match: { business: businessId, lastMessageAt: { $gte: sevenDaysAgo } } },
         { $group: {
-            _id: {
-              year:  { $year:  '$lastMessageAt' },
-              month: { $month: '$lastMessageAt' },
-              day:   { $dayOfMonth: '$lastMessageAt' },
-            },
+            _id: { year: { $year: '$lastMessageAt' }, month: { $month: '$lastMessageAt' }, day: { $dayOfMonth: '$lastMessageAt' } },
             messages: { $sum: 1 },
         }},
       ], 'weeklyMessages'),
@@ -414,7 +425,6 @@ exports.getAnalytics = async (req, res) => {
     const stats       = convStatsRaw[0] || { total: 0, open: 0, closed: 0, leads: 0 };
     const revenueData = revenueRaw[0]   || { total: 0, count: 0 };
 
-    // Build accurate 7-day chart array
     const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
     const weeklyMap  = {};
     weeklyRaw.forEach(r => {
@@ -422,25 +432,27 @@ exports.getAnalytics = async (req, res) => {
     });
     const weeklyMessages = [];
     for (let i = 6; i >= 0; i--) {
-      const d   = new Date(now);
+      const d = new Date(now);
       d.setDate(now.getDate() - i);
-      const key = `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
-      weeklyMessages.push({ day: DAY_LABELS[d.getDay()], messages: weeklyMap[key] || 0 });
+      weeklyMessages.push({
+        day: DAY_LABELS[d.getDay()],
+        messages: weeklyMap[`${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`] || 0,
+      });
     }
 
     return res.json({
       success: true,
       data: {
-        conversations:       stats,
-        revenue:             revenueData,
-        conversionRate:      stats.total > 0 ? parseFloat(((stats.leads / stats.total) * 100).toFixed(1)) : 0,
+        conversations: stats,
+        revenue: revenueData,
+        conversionRate: stats.total > 0 ? parseFloat(((stats.leads / stats.total) * 100).toFixed(1)) : 0,
         recentConversations: recentConvs,
         paymentBreakdown,
         weeklyMessages,
       },
     });
   } catch (err) {
-    logger.error(`getAnalytics fatal error: ${err.message}\n${err.stack}`);
+    logger.error(`getAnalytics fatal: ${err.message}\n${err.stack}`);
     return res.status(500).json({ success: false, message: err.message });
   }
 };

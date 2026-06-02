@@ -17,7 +17,15 @@ export default function Settings() {
   const [pwSaving, setPwSaving]     = useState(false);
   const [pwMsg, setPwMsg]           = useState(null);
 
-  useEffect(() => { api.get('/business').then(({ data }) => setBusiness(data.data)); }, []);
+  useEffect(() => {
+    api.get('/business')
+      .then(({ data }) => setBusiness(data.data))
+      .catch(() => setBusiness({
+        name: '', description: '', phone: '', email: '', website: '',
+        industry: '', aiKnowledge: '', settings: {}, whatsappPhoneNumberId: '',
+        whatsappVerifyToken: '', paymentDetails: {},
+      }));
+  }, []);
 
   const update = (path, value) => {
     setBusiness(prev => {

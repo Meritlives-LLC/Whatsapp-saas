@@ -9,16 +9,16 @@ const headers = () => ({
   'Content-Type': 'application/json',
 });
 
+// Axios instance with 15s timeout — a slow/unreachable Paystack will never
+// hang the server and trigger uncaughtException → process.exit(1)
+const ax = axios.create({ timeout: 15000 });
+
 // ─── Idempotency store (prevent duplicate webhook processing) ─────────────
-// Uses Map with timestamp so we can expire old entries without relying on
-// server uptime (free-tier Render restarts frequently, but that's acceptable —
-// the 401 check on webhook signature is the primary guard anyway)
 const processedRefs = new Map();
 const IDEMPOTENCY_TTL = 24 * 60 * 60 * 1000; // 24h
 const isAlreadyProcessed = (ref) => {
   if (!ref) return false;
   const now = Date.now();
-  // Clean expired entries
   for (const [key, ts] of processedRefs) {
     if (now - ts > IDEMPOTENCY_TTL) processedRefs.delete(key);
   }
@@ -27,17 +27,13 @@ const isAlreadyProcessed = (ref) => {
   return false;
 };
 
-// ─── Bank list cache (avoid hammering Paystack on every dropdown open) ──────
+// ─── Bank list cache ──────────────────────────────────────────────────────
 let banksCache = null;
 let banksCacheTime = 0;
 const BANKS_CACHE_TTL = 60 * 60 * 1000; // 1 hour
 
-// ── TRANSACTIONS ─────────────────────────────────────────────────────────────
+// ── TRANSACTIONS ──────────────────────────────────────────────────────────────
 
-/**
- * Initialize a payment — supports card, bank transfer, USSD, mobile money
- * channels: ['card'] | ['bank_transfer'] | ['card','bank_transfer'] etc.
- */
 const initializePayment = async ({
   email, amount, reference, metadata = {}, callbackUrl, channels
 }) => {
@@ -48,34 +44,23 @@ const initializePayment = async ({
     metadata,
     callback_url: callbackUrl || `${process.env.FRONTEND_URL}/payment/verify`,
   };
-
-  // If specific channels requested, pass them
   if (channels && channels.length > 0) {
     payload.channels = channels;
   }
-
-  const response = await axios.post(`${BASE}/transaction/initialize`, payload, { headers: headers() });
+  const response = await ax.post(`${BASE}/transaction/initialize`, payload, { headers: headers() });
   logger.info(`Payment initialized: ${reference} — ₦${amount}`);
-  return response.data.data; // { authorization_url, access_code, reference }
-};
-
-/**
- * Verify a transaction
- */
-const verifyPayment = async (reference) => {
-  const response = await axios.get(`${BASE}/transaction/verify/${reference}`, { headers: headers() });
   return response.data.data;
 };
 
-/**
- * Validate Paystack webhook HMAC signature
- */
+const verifyPayment = async (reference) => {
+  const response = await ax.get(`${BASE}/transaction/verify/${reference}`, { headers: headers() });
+  return response.data.data;
+};
+
 const validateWebhookSignature = (rawBody, signature) => {
-  // rawBody must be the raw Buffer/string, not parsed JSON
   const body = typeof rawBody === 'object' && !Buffer.isBuffer(rawBody)
     ? JSON.stringify(rawBody)
     : rawBody;
-
   const hash = crypto
     .createHmac('sha512', process.env.PAYSTACK_SECRET_KEY)
     .update(body)
@@ -83,61 +68,45 @@ const validateWebhookSignature = (rawBody, signature) => {
   return hash === signature;
 };
 
-/**
- * Generate unique payment reference
- */
 const generateReference = (prefix = 'WA') =>
   `${prefix}-${Date.now()}-${Math.random().toString(36).substr(2, 6).toUpperCase()}`;
 
 // ── BANK TRANSFER ─────────────────────────────────────────────────────────────
 
-/**
- * Get list of all Nigerian banks from Paystack (cached 1h)
- */
 const getBanks = async () => {
   const now = Date.now();
   if (banksCache && (now - banksCacheTime) < BANKS_CACHE_TTL) {
     return banksCache;
   }
-  const response = await axios.get(`${BASE}/bank?country=nigeria&perPage=100`, { headers: headers() });
+  const response = await ax.get(`${BASE}/bank?country=nigeria&perPage=100`, { headers: headers() });
   banksCache = response.data.data;
   banksCacheTime = now;
-  return banksCache; // array of { name, slug, code, ... }
+  return banksCache;
 };
 
-/**
- * Verify a bank account number and return account name
- */
 const verifyBankAccount = async (accountNumber, bankCode) => {
-  const response = await axios.get(
+  const response = await ax.get(
     `${BASE}/bank/resolve?account_number=${accountNumber}&bank_code=${bankCode}`,
     { headers: headers() }
   );
-  return response.data.data; // { account_number, account_name, bank_id }
+  return response.data.data;
 };
 
-/**
- * Create a transfer recipient (save for future transfers)
- */
 const createTransferRecipient = async ({ accountName, accountNumber, bankCode }) => {
-  const response = await axios.post(`${BASE}/transferrecipient`, {
+  const response = await ax.post(`${BASE}/transferrecipient`, {
     type: 'nuban',
     name: accountName,
     account_number: accountNumber,
     bank_code: bankCode,
     currency: 'NGN',
   }, { headers: headers() });
-  return response.data.data; // { recipient_code, ... }
+  return response.data.data;
 };
 
-/**
- * Initiate a transfer to a bank account
- * (Used to pay out to business owners if your platform collects money)
- */
 const initiateTransfer = async ({ amount, recipientCode, reason, reference }) => {
-  const response = await axios.post(`${BASE}/transfer`, {
+  const response = await ax.post(`${BASE}/transfer`, {
     source: 'balance',
-    amount: Math.round(amount * 100), // kobo
+    amount: Math.round(amount * 100),
     recipient: recipientCode,
     reason: reason || 'WA AutoBot Payout',
     reference: reference || generateReference('TRF'),
@@ -146,37 +115,22 @@ const initiateTransfer = async ({ amount, recipientCode, reason, reference }) =>
   return response.data.data;
 };
 
-/**
- * Verify a transfer status
- */
 const verifyTransfer = async (reference) => {
-  const response = await axios.get(`${BASE}/transfer/verify/${reference}`, { headers: headers() });
+  const response = await ax.get(`${BASE}/transfer/verify/${reference}`, { headers: headers() });
   return response.data.data;
 };
 
-/**
- * Initialize payment with bank transfer channel only
- * Returns virtual account details for the customer to pay into
- */
 const initializeBankTransfer = async ({ email, amount, reference, metadata, customerName }) => {
   return await initializePayment({
-    email,
-    amount,
-    reference,
+    email, amount, reference,
     metadata: { ...metadata, customerName },
     channels: ['bank_transfer'],
   });
 };
 
-/**
- * Initialize payment accepting all channels (card + bank transfer + USSD)
- */
 const initializeAllChannels = async ({ email, amount, reference, metadata }) => {
   return await initializePayment({
-    email,
-    amount,
-    reference,
-    metadata,
+    email, amount, reference, metadata,
     channels: ['card', 'bank_transfer', 'ussd', 'mobile_money', 'qr'],
   });
 };
