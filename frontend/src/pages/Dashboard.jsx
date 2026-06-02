@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { MessageSquare, Users, TrendingUp, DollarSign, CheckCircle, Clock, ArrowUpRight, AlertTriangle, RefreshCw } from 'lucide-react';
+import { MessageSquare, Users, TrendingUp, DollarSign, CheckCircle, Clock, ArrowUpRight } from 'lucide-react';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import api from '../utils/api';
 import { useAuth } from '../context/AuthContext';
@@ -28,45 +28,40 @@ const getGreeting = () => {
   return { text: 'Good night', emoji: '🌙' };
 };
 
+const EMPTY_CHART = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map(day => ({ day, messages: 0 }));
+
 export default function Dashboard() {
   const [analytics, setAnalytics] = useState(null);
-  const [chartData, setChartData] = useState([]);
+  const [chartData, setChartData] = useState(EMPTY_CHART);
   const [loading, setLoading]     = useState(true);
-  const [error, setError]         = useState(null);
   const [currSym, setCurrSym]     = useState('₦');
   const { business } = useAuth();
 
   const [greeting, setGreeting] = useState(getGreeting);
   const [clock, setClock]       = useState(() => new Date());
 
-  const load = () => {
-    setLoading(true);
-    setError(null);
-    Promise.all([
-      api.get('/analytics'),
-      api.get('/subscription/plans').catch(() => null),
-    ])
-      .then(([analyticsRes, plansRes]) => {
-        const data = analyticsRes.data.data;
-        setAnalytics(data);
-        // Build weekly chart from real data if available, fallback to empty days
-        const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-        if (data.weeklyMessages && Array.isArray(data.weeklyMessages)) {
-          setChartData(data.weeklyMessages);
-        } else {
-          // Seed skeleton with zeros so chart axes still render properly
-          setChartData(days.map(day => ({ day, messages: 0 })));
-        }
-        if (plansRes) {
-          const sym = Object.values(plansRes.data.data).find(p => p.currencySymbol)?.currencySymbol || '₦';
-          setCurrSym(sym);
+  useEffect(() => {
+    // Fetch analytics — silently show zeros on any error, never block the dashboard
+    api.get('/analytics')
+      .then(({ data }) => {
+        const d = data?.data || {};
+        setAnalytics(d);
+        if (Array.isArray(d.weeklyMessages) && d.weeklyMessages.length) {
+          setChartData(d.weeklyMessages);
         }
       })
-      .catch(() => setError('Could not load dashboard data. Check your connection.'))
+      .catch(() => {
+        setAnalytics({});
+      })
       .finally(() => setLoading(false));
-  };
 
-  useEffect(() => { load(); }, []);
+    api.get('/subscription/plans')
+      .then(({ data }) => {
+        const sym = Object.values(data?.data || {}).find(p => p.currencySymbol)?.currencySymbol || '₦';
+        setCurrSym(sym);
+      })
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     const tick = setInterval(() => {
@@ -78,32 +73,16 @@ export default function Dashboard() {
 
   const timeString = clock.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
   const dateString = clock.toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' });
-  const firstName = business?.name?.split(' ')[0] || 'there';
+  const firstName  = business?.name?.split(' ')[0] || 'there';
 
-  // Early return AFTER all hooks
   if (loading) return (
     <div className="p-8 flex items-center justify-center h-full">
       <div className="w-8 h-8 border-2 border-green-500 border-t-transparent rounded-full animate-spin" />
     </div>
   );
 
-  if (error) return (
-    <div className="p-8 flex flex-col items-center justify-center h-full gap-4">
-      <div className="w-12 h-12 bg-red-50 rounded-2xl flex items-center justify-center">
-        <AlertTriangle size={22} className="text-red-400" />
-      </div>
-      <p className="text-sm text-gray-600 text-center max-w-xs">{error}</p>
-      <button
-        onClick={load}
-        className="flex items-center gap-2 px-4 py-2 bg-gray-900 text-white text-sm font-semibold rounded-xl hover:bg-gray-700 transition-colors"
-      >
-        <RefreshCw size={14} /> Retry
-      </button>
-    </div>
-  );
-
-  const stats = analytics?.conversations || {};
-  const revenue = analytics?.revenue || {};
+  const stats   = analytics?.conversations || {};
+  const revenue = analytics?.revenue       || {};
 
   return (
     <div className="p-4 md:p-8">
@@ -117,10 +96,10 @@ export default function Dashboard() {
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4 mb-6 md:mb-8">
-        <StatCard label="Total Conversations" value={stats.total || 0} icon={MessageSquare} color="bg-blue-500" />
-        <StatCard label="Active Leads" value={stats.leads || 0} icon={Users} color="bg-purple-500" />
-        <StatCard label="Conversion Rate" value={`${analytics?.conversionRate || 0}%`} icon={TrendingUp} color="bg-green-500" />
-        <StatCard label="Revenue" value={`${currSym}${(revenue.total || 0).toLocaleString()}`} icon={DollarSign} color="bg-amber-500" />
+        <StatCard label="Total Conversations" value={stats.total  || 0} icon={MessageSquare} color="bg-blue-500" />
+        <StatCard label="Active Leads"         value={stats.leads  || 0} icon={Users}         color="bg-purple-500" />
+        <StatCard label="Conversion Rate"      value={`${analytics?.conversionRate || 0}%`}   icon={TrendingUp}    color="bg-green-500" />
+        <StatCard label="Revenue"              value={`${currSym}${(revenue.total || 0).toLocaleString()}`} icon={DollarSign} color="bg-amber-500" />
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-6">
@@ -130,13 +109,13 @@ export default function Dashboard() {
             <AreaChart data={chartData}>
               <defs>
                 <linearGradient id="msgGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#22c55e" stopOpacity={0.15} />
+                  <stop offset="5%"  stopColor="#22c55e" stopOpacity={0.15} />
                   <stop offset="95%" stopColor="#22c55e" stopOpacity={0} />
                 </linearGradient>
               </defs>
               <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-              <XAxis dataKey="day" tick={{ fontSize: 11 }} axisLine={false} tickLine={false} />
-              <YAxis tick={{ fontSize: 11 }} axisLine={false} tickLine={false} width={30} />
+              <XAxis dataKey="day"  tick={{ fontSize: 11 }} axisLine={false} tickLine={false} />
+              <YAxis                tick={{ fontSize: 11 }} axisLine={false} tickLine={false} width={30} />
               <Tooltip contentStyle={{ borderRadius: 8, border: 'none', boxShadow: '0 4px 20px rgba(0,0,0,0.1)' }} />
               <Area type="monotone" dataKey="messages" stroke="#22c55e" strokeWidth={2} fill="url(#msgGrad)" />
             </AreaChart>
@@ -156,7 +135,7 @@ export default function Dashboard() {
                   <p className="text-xs text-gray-400">{formatDistanceToNow(new Date(conv.lastMessageAt))} ago</p>
                 </div>
                 <span className={`text-xs px-2 py-0.5 rounded-full font-medium flex-shrink-0 ${
-                  conv.status === 'open' ? 'bg-green-50 text-green-700' :
+                  conv.status === 'open'    ? 'bg-green-50 text-green-700' :
                   conv.status === 'pending' ? 'bg-amber-50 text-amber-700' :
                   'bg-gray-100 text-gray-500'
                 }`}>
@@ -173,9 +152,9 @@ export default function Dashboard() {
 
       <div className="mt-4 md:mt-6 grid grid-cols-3 gap-3 md:gap-4">
         {[
-          { label: 'Open', value: stats.open || 0, icon: Clock, color: 'text-blue-600 bg-blue-50' },
-          { label: 'Closed', value: stats.closed || 0, icon: CheckCircle, color: 'text-green-600 bg-green-50' },
-          { label: 'Paid Orders', value: revenue.count || 0, icon: DollarSign, color: 'text-amber-600 bg-amber-50' },
+          { label: 'Open',        value: stats.open    || 0, icon: Clock,       color: 'text-blue-600 bg-blue-50' },
+          { label: 'Closed',      value: stats.closed  || 0, icon: CheckCircle, color: 'text-green-600 bg-green-50' },
+          { label: 'Paid Orders', value: revenue.count || 0, icon: DollarSign,  color: 'text-amber-600 bg-amber-50' },
         ].map(({ label, value, icon: Icon, color }) => (
           <div key={label} className="bg-white rounded-xl p-3 md:p-4 border border-gray-100 flex items-center gap-2 md:gap-4">
             <div className={`w-8 h-8 md:w-10 md:h-10 rounded-xl flex items-center justify-center flex-shrink-0 ${color}`}>
