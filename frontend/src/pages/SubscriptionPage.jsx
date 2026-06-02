@@ -1,68 +1,106 @@
-// SubscriptionPage.jsx — compact billing overview at /subscription/manage
 import { useState, useEffect } from 'react';
-import { useSearchParams, Link } from 'react-router-dom';
-import { Zap, CheckCircle, AlertCircle, TrendingUp, XCircle, RotateCcw, RefreshCw, ArrowRight } from 'lucide-react';
-import { format } from 'date-fns';
+import {
+  Check, TrendingUp, Crown, ArrowRight, AlertTriangle,
+  XCircle, RefreshCw, RotateCcw, Receipt, ChevronDown, ChevronUp,
+} from 'lucide-react';
 import api from '../utils/api';
+import logo from '../assets/logo.svg';
 
-const planColors = {
-  free: 'bg-gray-100 text-gray-700',
-  starter: 'bg-blue-50 text-blue-700',
-  growth: 'bg-green-50 text-green-700',
-  pro: 'bg-purple-50 text-purple-700',
+const LogoIcon = ({ size = 16 }) => (
+  <img src={logo} alt="logo" style={{ width: size, height: size }} className="object-contain" />
+);
+
+const PLAN_ICONS  = { free: LogoIcon, starter: TrendingUp, growth: TrendingUp, pro: Crown };
+const PLAN_COLORS = {
+  free:    { bg: 'bg-gray-50',    text: 'text-gray-700',   btn: 'bg-gray-800 hover:bg-gray-900',    badge: '' },
+  starter: { bg: 'bg-blue-50',   text: 'text-blue-700',   btn: 'bg-blue-600 hover:bg-blue-700',    badge: '' },
+  growth:  { bg: 'bg-green-50',  text: 'text-green-700',  btn: 'bg-green-600 hover:bg-green-700',  badge: 'Most popular' },
+  pro:     { bg: 'bg-purple-50', text: 'text-purple-700', btn: 'bg-purple-600 hover:bg-purple-700', badge: 'Best value' },
 };
 
-export default function SubscriptionPage() {
-  const [sub, setSub]             = useState(null);
-  const [plans, setPlans]         = useState({});
-  const [currSym, setCurrSym]     = useState('₦');
-  const [loading, setLoading]     = useState(true);
-  const [upgrading, setUpgrading] = useState(false);
-  const [cancelling, setCancelling]     = useState(false);
+const formatPrice = (plan, sym = '₦') => {
+  if (!plan || plan.price === 0) return 'Free';
+  const amount = plan.displayPrice ?? plan.price;
+  return `${sym}${amount.toLocaleString()}`;
+};
+
+export default function Subscription() {
+  const [sub, setSub]               = useState(null);
+  const [plans, setPlans]           = useState({});
+  const [currency, setCurrency]     = useState('NGN');
+  const [currSym, setCurrSym]       = useState('₦');
+  const [loading, setLoading]       = useState(true);
+  const [upgrading, setUpgrading]   = useState(null);
+  const [cancelling, setCancelling] = useState(false);
   const [reactivating, setReactivating] = useState(false);
   const [confirmCancel, setConfirmCancel] = useState(false);
-  const [msg, setMsg]             = useState(null);
-  const [searchParams] = useSearchParams();
+  const [billingHistory, setBillingHistory] = useState([]);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [msg, setMsg]               = useState(null);
 
-  useEffect(() => {
-    const ref = searchParams.get('ref');
-    if (ref) verifyPayment(ref);
-    else loadData();
-  }, []);
+  const FALLBACK_PLANS = {
+    free:    { id: 'free',    name: 'Free',    price: 0,     displayPrice: 0,     currencySymbol: '₦', features: ['100 AI replies / month', '1 WhatsApp number', 'Up to 5 products', 'Basic analytics'] },
+    starter: { id: 'starter', name: 'Starter', price: 8000,  displayPrice: 8000,  currencySymbol: '₦', features: ['1,000 AI replies / month', '1 WhatsApp number', 'Up to 50 products', 'Full analytics', 'Bookings & reminders'] },
+    growth:  { id: 'growth',  name: 'Growth',  price: 20000, displayPrice: 20000, currencySymbol: '₦', features: ['5,000 AI replies / month', '3 WhatsApp numbers', 'Unlimited products', 'Priority support', 'Custom AI persona'], popular: true },
+    pro:     { id: 'pro',     name: 'Pro',     price: 45000, displayPrice: 45000, currencySymbol: '₦', features: ['Unlimited AI replies', 'Up to 10 WhatsApp numbers', 'Unlimited products & team', 'Dedicated support'] },
+  };
 
-  const loadData = async () => {
+  const loadAll = async () => {
     try {
-      const [subRes, plansRes] = await Promise.all([
-        api.get('/subscription'),
-        api.get('/subscription/plans'),
+      const [subRes, plansRes, histRes] = await Promise.all([
+        api.get('/subscription').catch(() => null),
+        api.get('/subscription/plans').catch(() => null),
+        api.get('/subscription/history').catch(() => null),
       ]);
-      setSub(subRes.data.data);
-      setPlans(plansRes.data.data);
-      const sym = Object.values(plansRes.data.data).find(p => p.currencySymbol)?.currencySymbol || '₦';
-      setCurrSym(sym);
-    } finally {
-      setLoading(false);
+
+      if (subRes?.data?.data) setSub(subRes.data.data);
+
+      const plansData = plansRes?.data?.data;
+      if (plansData && Object.keys(plansData).length > 0) {
+        setPlans(plansData);
+        const cur = plansRes.data.currency || 'NGN';
+        setCurrency(cur);
+        const sym = Object.values(plansData).find(p => p.currencySymbol)?.currencySymbol || '₦';
+        setCurrSym(sym);
+      } else {
+        // Fallback: show NGN prices so UI is never empty
+        setPlans(FALLBACK_PLANS);
+        setCurrency('NGN');
+        setCurrSym('₦');
+      }
+
+      setBillingHistory(histRes?.data?.data || []);
+    } catch (err) {
+      // Even on total failure, show fallback plans
+      setPlans(FALLBACK_PLANS);
     }
   };
 
-  const verifyPayment = async (ref) => {
-    try {
-      await api.post('/subscription/verify', { reference: ref });
-      window.history.replaceState({}, '', '/subscription/manage');
-      setMsg({ type: 'success', text: '🎉 Payment confirmed! Your plan has been upgraded.' });
-    } catch { /* webhook already handled it */ }
-    await loadData();
-  };
+  useEffect(() => {
+    loadAll().finally(() => setLoading(false));
+
+    // Handle return from Paystack — ?ref= on this page
+    const urlParams = new URLSearchParams(window.location.search);
+    const ref = urlParams.get('ref');
+    if (ref) {
+      api.post('/subscription/verify', { reference: ref })
+        .then(() => {
+          setMsg({ type: 'success', text: '🎉 Payment confirmed! Your plan has been upgraded.' });
+          window.history.replaceState({}, '', '/subscription');
+          return loadAll();
+        })
+        .catch(() => setMsg({ type: 'error', text: 'Payment verification failed. Contact support if your payment went through.' }));
+    }
+  }, []);
 
   const handleUpgrade = async (planId) => {
-    setUpgrading(true);
+    setUpgrading(planId);
     try {
       const { data } = await api.post('/subscription/upgrade', { planId });
       window.location.href = data.data.paymentLink;
     } catch (err) {
-      setMsg({ type: 'error', text: err.response?.data?.message || 'Something went wrong' });
-    } finally {
-      setUpgrading(false);
+      setMsg({ type: 'error', text: err.response?.data?.message || 'Upgrade failed. Try again.' });
+      setUpgrading(null);
     }
   };
 
@@ -72,9 +110,9 @@ export default function SubscriptionPage() {
       const { data } = await api.post('/subscription/cancel');
       setMsg({ type: 'info', text: data.message });
       setConfirmCancel(false);
-      await loadData();
+      await loadAll();
     } catch (err) {
-      setMsg({ type: 'error', text: err.response?.data?.message || 'Error cancelling' });
+      setMsg({ type: 'error', text: 'Cancellation failed. Contact support.' });
     } finally {
       setCancelling(false);
     }
@@ -85,7 +123,7 @@ export default function SubscriptionPage() {
     try {
       const { data } = await api.post('/subscription/reactivate');
       setMsg({ type: 'success', text: data.message });
-      await loadData();
+      await loadAll();
     } catch (err) {
       setMsg({ type: 'error', text: err.response?.data?.message || 'Reactivation failed. Contact support.' });
     } finally {
@@ -94,209 +132,372 @@ export default function SubscriptionPage() {
   };
 
   if (loading) return (
-    <div className="p-8 flex items-center justify-center">
-      <div className="w-6 h-6 border-2 border-green-500 border-t-transparent rounded-full animate-spin" />
+    <div className="p-8 flex items-center justify-center h-full">
+      <div className="w-8 h-8 border-2 border-green-500 border-t-transparent rounded-full animate-spin" />
     </div>
   );
 
-  const planOrder   = ['free', 'starter', 'growth', 'pro'];
-  const currentIdx  = planOrder.indexOf(sub?.plan || 'free');
-  const nextPlanId  = planOrder[currentIdx + 1] || null;
-  const nextPlan    = nextPlanId ? plans[nextPlanId] : null;
+  const currentPlan  = sub?.plan || 'free';
+  const usageCount   = sub?.usage?.aiRepliesCount || 0;
+  const usageLimit   = sub?.limits?.aiRepliesPerMonth || 100;
+  const isUnlimited  = usageLimit >= 999999;
+  const usagePercent = isUnlimited ? 0 : Math.min(100, Math.round((usageCount / usageLimit) * 100));
+  const nearLimit    = usagePercent >= 80;
+  const atLimit      = usagePercent >= 100;
+  const planOrder    = ['free', 'starter', 'growth', 'pro'];
 
-  const usedReplies  = sub?.usage?.aiRepliesCount || 0;
-  const totalReplies = sub?.limits?.aiRepliesPerMonth ?? plans[sub?.plan]?.limits?.aiRepliesPerMonth ?? 100;
-  const isUnlimited  = totalReplies >= 999999;
-  const usagePct     = isUnlimited ? 5 : Math.min((usedReplies / totalReplies) * 100, 100);
-  const isActive     = sub?.status === 'active';
-
-  // Reset date
+  // Reset date — 1st of next month
   const now = new Date();
   const resetDate = new Date(now.getFullYear(), now.getMonth() + 1, 1)
-    .toLocaleDateString('en-NG', { day: 'numeric', month: 'short' });
+    .toLocaleDateString('en-NG', { day: 'numeric', month: 'long' });
 
-  const formatPrice = (plan) => {
-    if (!plan || plan.price === 0) return 'Free forever';
-    const amount = plan.displayPrice ?? plan.price;
-    return `${currSym}${amount.toLocaleString()}/month`;
-  };
+  const ngnNote = currency !== 'NGN'
+    ? <span className="text-xs text-gray-400 ml-1">(charged in ₦ NGN via Paystack)</span>
+    : null;
 
   return (
-    <div className="p-8 max-w-3xl">
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold text-gray-900">Subscription</h1>
-        <p className="text-sm text-gray-500 mt-1">Manage your plan and billing</p>
+    <div className="p-4 md:p-8">
+      <div className="mb-6 md:mb-8">
+        <h1 className="text-xl md:text-2xl font-bold text-gray-900">Subscription & Billing</h1>
+        <p className="text-sm text-gray-500 mt-1">Manage your plan and track AI usage</p>
       </div>
 
       {msg && (
-        <div className={`mb-5 flex items-start gap-3 p-4 rounded-xl text-sm font-medium ${
+        <div className={`mb-6 flex items-start gap-3 p-4 rounded-xl text-sm font-medium ${
           msg.type === 'success' ? 'bg-green-50 text-green-700 border border-green-200' :
           msg.type === 'error'   ? 'bg-red-50 text-red-600 border border-red-200' :
                                    'bg-blue-50 text-blue-700 border border-blue-200'
         }`}>
+          {msg.type === 'success' ? <Check size={16} className="mt-0.5 flex-shrink-0" /> :
+           msg.type === 'error'   ? <XCircle size={16} className="mt-0.5 flex-shrink-0" /> :
+                                    <AlertTriangle size={16} className="mt-0.5 flex-shrink-0" />}
           <span className="flex-1">{msg.text}</span>
-          <button onClick={() => setMsg(null)} className="opacity-60 hover:opacity-100">✕</button>
+          <button onClick={() => setMsg(null)} className="ml-auto text-current opacity-60 hover:opacity-100">✕</button>
         </div>
       )}
 
-      {/* Current Plan Card */}
-      <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6 mb-5">
-        <div className="flex items-start justify-between mb-5">
-          <div>
-            <div className="flex items-center gap-2 mb-1">
-              <span className={`text-xs font-semibold px-2.5 py-1 rounded-full ${planColors[sub?.plan] || planColors.free}`}>
-                {(sub?.plan || 'free').toUpperCase()} PLAN
-              </span>
-              {isActive && (
-                <span className="flex items-center gap-1 text-xs text-green-600">
-                  <CheckCircle size={12} /> Active
-                </span>
-              )}
-              {sub?.status === 'past_due' && (
-                <span className="flex items-center gap-1 text-xs text-red-500">
-                  <AlertCircle size={12} /> Past due
-                </span>
-              )}
-              {sub?.cancelAtPeriodEnd && (
-                <span className="flex items-center gap-1 text-xs text-amber-600">
-                  <AlertCircle size={12} /> Cancelling
-                </span>
+      {/* Current plan + usage */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-5 mb-8 md:mb-10">
+
+        {/* Plan card */}
+        <div className="md:col-span-2 bg-white rounded-xl border border-gray-100 shadow-sm p-5 md:p-6">
+          <div className="flex items-start justify-between mb-4 md:mb-5">
+            <div>
+              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1">Current plan</p>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xl md:text-2xl font-bold text-gray-900 capitalize">{currentPlan}</span>
+                {currentPlan !== 'free' && (
+                  <span className="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-700 font-medium">
+                    {sub?.status === 'active' ? 'Active' : sub?.status}
+                  </span>
+                )}
+                {sub?.cancelAtPeriodEnd && (
+                  <span className="text-xs px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 font-medium">
+                    Cancels {new Date(sub.currentPeriodEnd).toLocaleDateString()}
+                  </span>
+                )}
+              </div>
+              {currentPlan !== 'free' && sub?.currentPeriodEnd && (
+                <p className="text-xs text-gray-400 mt-1">
+                  {sub?.cancelAtPeriodEnd ? 'Access until' : 'Next billing'}:{' '}
+                  {new Date(sub.currentPeriodEnd).toLocaleDateString('en-NG', { day: 'numeric', month: 'long', year: 'numeric' })}
+                </p>
               )}
             </div>
-            <p className="text-2xl font-bold text-gray-900 mt-1">
-              {formatPrice(plans[sub?.plan])}
-            </p>
+            <div className={`text-xl md:text-2xl font-bold ${currentPlan === 'free' ? 'text-gray-900' : 'text-green-600'}`}>
+              {currentPlan === 'free'
+                ? 'Free'
+                : <>{formatPrice(plans[currentPlan], currSym)}<span className="text-sm font-normal text-gray-400">/mo</span></>
+              }
+              {currentPlan !== 'free' && ngnNote}
+            </div>
           </div>
-          {sub?.plan !== 'free' && sub?.currentPeriodEnd && (
-            <div className="text-right">
-              <p className="text-xs text-gray-400">
-                {sub?.cancelAtPeriodEnd ? 'Access until' : 'Renews on'}
-              </p>
-              <p className="text-sm font-medium text-gray-700">
-                {format(new Date(sub.currentPeriodEnd), 'MMM d, yyyy')}
-              </p>
+
+          {/* Plan limits grid */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4">
+            {[
+              { label: 'AI replies/mo',   value: isUnlimited ? '∞' : usageLimit.toLocaleString() },
+              { label: 'WhatsApp numbers', value: (sub?.limits?.whatsappNumbers >= 999999) ? '∞' : (sub?.limits?.whatsappNumbers ?? '—') },
+              { label: 'Products',         value: (sub?.limits?.products >= 999999) ? '∞' : (sub?.limits?.products ?? '—') },
+              { label: 'Team members',     value: (sub?.limits?.teamMembers >= 999999) ? '∞' : (sub?.limits?.teamMembers ?? '—') },
+            ].map(({ label, value }) => (
+              <div key={label} className="bg-gray-50 rounded-lg p-2.5 text-center">
+                <p className="text-base font-bold text-gray-900">{value}</p>
+                <p className="text-xs text-gray-400 mt-0.5">{label}</p>
+              </div>
+            ))}
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-4">
+            {(plans[currentPlan]?.features || []).map((f, i) => (
+              <div key={i} className="flex items-center gap-2 text-sm text-gray-600">
+                <Check size={13} className="text-green-500 flex-shrink-0" />
+                {f}
+              </div>
+            ))}
+          </div>
+
+          {/* Cancel / Reactivate actions */}
+          {currentPlan !== 'free' && (
+            <div className="mt-4 pt-4 border-t border-gray-100">
+              {sub?.cancelAtPeriodEnd ? (
+                <button
+                  onClick={handleReactivate}
+                  disabled={reactivating}
+                  className="text-xs text-green-600 hover:text-green-700 font-medium transition-colors disabled:opacity-50 flex items-center gap-1"
+                >
+                  <RotateCcw size={12} />
+                  {reactivating ? 'Reactivating...' : 'Resume subscription'}
+                </button>
+              ) : confirmCancel ? (
+                <div className="bg-red-50 border border-red-100 rounded-xl p-3">
+                  <p className="text-xs font-semibold text-red-700 mb-1">Cancel your subscription?</p>
+                  <p className="text-xs text-red-500 mb-3">You'll keep access until {sub?.currentPeriodEnd ? new Date(sub.currentPeriodEnd).toLocaleDateString('en-NG', { day: 'numeric', month: 'long' }) : 'end of period'}. No refunds for partial months.</p>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={handleCancel}
+                      disabled={cancelling}
+                      className="px-3 py-1.5 bg-red-500 hover:bg-red-600 text-white text-xs font-semibold rounded-lg transition-colors disabled:opacity-50"
+                    >
+                      {cancelling ? 'Cancelling...' : 'Yes, cancel'}
+                    </button>
+                    <button
+                      onClick={() => setConfirmCancel(false)}
+                      className="px-3 py-1.5 bg-white border border-gray-200 text-gray-600 text-xs font-semibold rounded-lg hover:bg-gray-50 transition-colors"
+                    >
+                      Keep subscription
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <button
+                  onClick={() => setConfirmCancel(true)}
+                  className="text-xs text-gray-400 hover:text-red-500 transition-colors flex items-center gap-1"
+                >
+                  <XCircle size={12} />
+                  Cancel subscription
+                </button>
+              )}
             </div>
           )}
         </div>
 
-        {/* AI Usage Bar */}
-        <div className="mb-4">
-          <div className="flex justify-between text-xs text-gray-500 mb-1.5">
-            <span>AI replies used this month</span>
-            <span className="font-medium text-gray-700">
-              {usedReplies.toLocaleString()} / {isUnlimited ? '∞' : totalReplies.toLocaleString()}
-              {!isUnlimited && <span className="text-gray-400 ml-1">· resets {resetDate}</span>}
-            </span>
-          </div>
-          <div className="h-2.5 bg-gray-100 rounded-full overflow-hidden">
-            <div
-              className={`h-full rounded-full transition-all ${usagePct >= 90 ? 'bg-red-400' : usagePct >= 70 ? 'bg-amber-400' : 'bg-green-500'}`}
-              style={{ width: `${usagePct}%` }}
-            />
-          </div>
-          {usagePct >= 80 && !isUnlimited && (
-            <p className="text-xs text-amber-600 mt-1.5 flex items-center gap-1">
-              <AlertCircle size={11} />
-              {usagePct >= 100 ? 'Limit reached — upgrade to restore AI replies' : `${Math.round(100 - usagePct)}% remaining — consider upgrading`}
-            </p>
-          )}
-        </div>
-
-        {/* Plan limits */}
-        <div className="grid grid-cols-4 gap-3">
-          {[
-            { label: 'AI replies / mo',  value: isUnlimited ? 'Unlimited' : totalReplies.toLocaleString() },
-            { label: 'WhatsApp numbers', value: sub?.limits?.whatsappNumbers >= 999999 ? 'Unlimited' : sub?.limits?.whatsappNumbers ?? '—' },
-            { label: 'Products',         value: sub?.limits?.products >= 999999 ? 'Unlimited' : sub?.limits?.products ?? '—' },
-            { label: 'Team members',     value: sub?.limits?.teamMembers >= 999999 ? 'Unlimited' : sub?.limits?.teamMembers ?? '—' },
-          ].map(({ label, value }) => (
-            <div key={label} className="bg-gray-50 rounded-xl p-3 text-center">
-              <p className="text-base font-bold text-gray-900">{value}</p>
-              <p className="text-xs text-gray-400 mt-0.5">{label}</p>
+        {/* Usage meter */}
+        <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5 md:p-6 flex flex-col">
+          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-4">AI replies this month</p>
+          <div className="flex-1 flex flex-col justify-center">
+            <div className="relative w-28 h-28 mx-auto mb-4">
+              <svg className="w-full h-full -rotate-90" viewBox="0 0 100 100">
+                <circle cx="50" cy="50" r="40" fill="none" stroke="#f3f4f6" strokeWidth="10" />
+                <circle
+                  cx="50" cy="50" r="40" fill="none"
+                  stroke={atLimit ? '#ef4444' : nearLimit ? '#f59e0b' : '#22c55e'}
+                  strokeWidth="10"
+                  strokeDasharray={`${2.51327 * (isUnlimited ? 0 : Math.min(usagePercent, 100))} 251.327`}
+                  strokeLinecap="round"
+                  style={{ transition: 'stroke-dasharray 0.5s ease' }}
+                />
+              </svg>
+              <div className="absolute inset-0 flex flex-col items-center justify-center">
+                <span className="text-xl font-bold text-gray-900">{isUnlimited ? '∞' : `${usagePercent}%`}</span>
+                <span className="text-xs text-gray-400">used</span>
+              </div>
             </div>
-          ))}
+            <div className="text-center">
+              <p className="text-sm font-semibold text-gray-900">
+                {usageCount.toLocaleString()}
+                <span className="font-normal text-gray-400"> / {isUnlimited ? '∞' : usageLimit.toLocaleString()}</span>
+              </p>
+              <p className="text-xs text-gray-400 mt-0.5">AI replies sent</p>
+              {!isUnlimited && (
+                <p className="text-xs text-gray-400 mt-1">Resets {resetDate}</p>
+              )}
+            </div>
+            {atLimit && (
+              <div className="mt-3 p-2 bg-red-50 rounded-lg text-center">
+                <p className="text-xs text-red-600 font-medium">Limit reached — AI paused</p>
+                <p className="text-xs text-red-400 mt-0.5">Upgrade to resume</p>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
-      {/* Next-plan upgrade CTA */}
-      {nextPlan && !sub?.cancelAtPeriodEnd && (
-        <div className="bg-gradient-to-r from-green-50 to-emerald-50 border border-green-100 rounded-2xl p-5 mb-5">
-          <div className="flex items-center justify-between gap-4">
-            <div>
-              <div className="flex items-center gap-2 mb-1">
-                <TrendingUp size={16} className="text-green-600" />
-                <span className="text-sm font-semibold text-green-800">
-                  Upgrade to {nextPlan.name}
-                </span>
-              </div>
-              <p className="text-xs text-green-700">
-                {nextPlan.features?.[0]} — {formatPrice(nextPlan)}
-              </p>
-            </div>
-            <button
-              onClick={() => handleUpgrade(nextPlanId)}
-              disabled={upgrading}
-              className="px-5 py-2.5 bg-green-500 hover:bg-green-600 text-white rounded-xl text-sm font-semibold transition-colors disabled:opacity-60 flex-shrink-0 flex items-center gap-1.5"
-            >
-              {upgrading ? (
-                <><RefreshCw size={13} className="animate-spin" /> Loading...</>
-              ) : (
-                <><ArrowRight size={13} /> Upgrade — {formatPrice(nextPlan)}</>
-              )}
-            </button>
-          </div>
+      {/* Pricing plans */}
+      <div className="mb-4 flex items-end justify-between">
+        <div>
+          <h2 className="text-lg font-bold text-gray-900">Choose a plan</h2>
+          <p className="text-sm text-gray-400 mt-0.5">
+            Upgrade or switch any time. Billed monthly.{ngnNote}
+          </p>
         </div>
-      )}
+      </div>
 
-      {/* Actions row */}
-      <div className="flex items-center justify-between">
-        <Link
-          to="/subscription"
-          className="text-sm text-green-600 hover:underline flex items-center gap-1"
-        >
-          <Zap size={13} /> View all plans & billing
-        </Link>
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 mb-8 md:mb-10">
+        {planOrder.map((planId) => {
+          const plan      = plans[planId];
+          if (!plan) return null;
+          const colors    = PLAN_COLORS[planId];
+          const Icon      = PLAN_ICONS[planId];
+          const isCurrent = currentPlan === planId;
+          const isUpgrade = planOrder.indexOf(planId) > planOrder.indexOf(currentPlan);
+          const isDowngrade = planOrder.indexOf(planId) < planOrder.indexOf(currentPlan);
+          const isFree    = planId === 'free';
 
-      {sub?.plan !== 'free' && (
-        sub?.cancelAtPeriodEnd ? (
-          <button
-            onClick={handleReactivate}
-            disabled={reactivating}
-            className="text-sm text-green-600 hover:text-green-700 font-medium transition-colors flex items-center gap-1"
-          >
-            <RotateCcw size={13} />
-            {reactivating ? 'Reactivating...' : 'Resume subscription'}
-          </button>
-        ) : confirmCancel ? (
-          <div className="bg-red-50 border border-red-100 rounded-xl p-3 flex flex-col gap-2">
-            <p className="text-xs font-semibold text-red-700">Cancel subscription?</p>
-            <p className="text-xs text-red-400">Access continues until end of billing period. No refund for partial months.</p>
-            <div className="flex gap-2">
-              <button
-                onClick={handleCancel}
-                disabled={cancelling}
-                className="px-3 py-1.5 bg-red-500 hover:bg-red-600 text-white text-xs font-semibold rounded-lg transition-colors disabled:opacity-50"
-              >
-                {cancelling ? 'Cancelling...' : 'Yes, cancel'}
-              </button>
-              <button
-                onClick={() => setConfirmCancel(false)}
-                className="px-3 py-1.5 bg-white border border-gray-200 text-gray-600 text-xs font-semibold rounded-lg hover:bg-gray-50"
-              >
-                Keep it
-              </button>
+          return (
+            <div key={planId}
+              className={`relative bg-white rounded-xl border shadow-sm p-5 flex flex-col ${
+                isCurrent       ? 'border-green-400 ring-2 ring-green-100' :
+                plan.popular    ? 'border-green-200' : 'border-gray-100'
+              }`}
+            >
+              {colors.badge && !isCurrent && (
+                <div className="absolute -top-3 left-1/2 -translate-x-1/2">
+                  <span className="text-xs px-3 py-1 rounded-full bg-green-500 text-white font-semibold whitespace-nowrap shadow-sm">
+                    {colors.badge}
+                  </span>
+                </div>
+              )}
+              {isCurrent && (
+                <div className="absolute -top-3 left-1/2 -translate-x-1/2">
+                  <span className="text-xs px-3 py-1 rounded-full bg-gray-900 text-white font-semibold whitespace-nowrap">
+                    Current plan
+                  </span>
+                </div>
+              )}
+
+              <div className={`w-9 h-9 rounded-xl flex items-center justify-center mb-3 ${colors.bg}`}>
+                <Icon size={16} className={colors.text} />
+              </div>
+              <p className="font-bold text-gray-900 text-base">{plan.name}</p>
+              <div className="mt-1 mb-4">
+                {plan.price === 0 ? (
+                  <span className="text-2xl font-bold text-gray-900">Free</span>
+                ) : (
+                  <>
+                    <span className="text-2xl font-bold text-gray-900">{formatPrice(plan, currSym)}</span>
+                    <span className="text-xs text-gray-400">/month</span>
+                  </>
+                )}
+              </div>
+
+              <ul className="space-y-2 mb-5 flex-1">
+                {(plan.features || []).map((f, i) => (
+                  <li key={i} className="flex items-start gap-2 text-xs text-gray-600">
+                    <Check size={12} className="text-green-500 mt-0.5 flex-shrink-0" />
+                    {f}
+                  </li>
+                ))}
+              </ul>
+
+              {isCurrent ? (
+                <div className="w-full py-2 text-center text-xs font-semibold text-green-600 bg-green-50 rounded-xl border border-green-200">
+                  ✓ Current plan
+                </div>
+              ) : isFree ? (
+                /* Can't "buy" Free — just show info */
+                <div className="w-full py-2 text-center text-xs text-gray-400 bg-gray-50 rounded-xl border border-gray-100">
+                  {isDowngrade ? 'Cancel to revert to Free' : 'Free tier'}
+                </div>
+              ) : isDowngrade ? (
+                <div className="w-full py-2 text-center text-xs text-gray-400 bg-gray-50 rounded-xl border border-gray-100 leading-snug px-2">
+                  Cancel current plan to switch down
+                </div>
+              ) : (
+                <button
+                  onClick={() => handleUpgrade(planId)}
+                  disabled={!!upgrading}
+                  className={`w-full py-2.5 text-white text-xs font-semibold rounded-xl transition-colors flex items-center justify-center gap-1.5 disabled:opacity-60 ${colors.btn}`}
+                >
+                  {upgrading === planId ? (
+                    <><RefreshCw size={12} className="animate-spin" /> Redirecting...</>
+                  ) : (
+                    <><ArrowRight size={12} /> Upgrade to {plan.name}</>
+                  )}
+                </button>
+              )}
             </div>
+          );
+        })}
+      </div>
+
+      {/* Billing History */}
+      <div className="bg-white rounded-xl border border-gray-100 shadow-sm mb-8">
+        <button
+          onClick={() => setHistoryOpen(o => !o)}
+          className="w-full flex items-center justify-between px-5 md:px-6 py-4 text-left"
+        >
+          <div className="flex items-center gap-2">
+            <Receipt size={16} className="text-gray-400" />
+            <h3 className="font-bold text-gray-900">Billing History</h3>
+            {billingHistory.length > 0 && (
+              <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-600 font-medium">
+                {billingHistory.length}
+              </span>
+            )}
           </div>
-        ) : (
-          <button
-            onClick={() => setConfirmCancel(true)}
-            className="text-sm text-gray-400 hover:text-red-500 transition-colors flex items-center gap-1"
-          >
-            <XCircle size={13} />
-            Cancel subscription
-          </button>
-        )
-      )}
+          {historyOpen ? <ChevronUp size={16} className="text-gray-400" /> : <ChevronDown size={16} className="text-gray-400" />}
+        </button>
+
+        {historyOpen && (
+          <div className="px-5 md:px-6 pb-5 border-t border-gray-50">
+            {billingHistory.length === 0 ? (
+              <div className="py-8 text-center">
+                <p className="text-sm text-gray-400">No payment records yet.</p>
+                <p className="text-xs text-gray-300 mt-1">Payments appear here after your first upgrade.</p>
+              </div>
+            ) : (
+              <table className="w-full mt-4 text-sm">
+                <thead>
+                  <tr className="text-xs text-gray-400 uppercase tracking-wide border-b border-gray-50">
+                    <th className="text-left pb-2 font-semibold">Date</th>
+                    <th className="text-left pb-2 font-semibold">Description</th>
+                    <th className="text-right pb-2 font-semibold">Amount</th>
+                    <th className="text-right pb-2 font-semibold">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {billingHistory.map((item, i) => (
+                    <tr key={i} className="border-b border-gray-50 last:border-0">
+                      <td className="py-3 text-gray-600 whitespace-nowrap">
+                        {new Date(item.date).toLocaleDateString('en-NG', { day: 'numeric', month: 'short', year: 'numeric' })}
+                      </td>
+                      <td className="py-3 text-gray-600 px-4">{item.description}</td>
+                      <td className="py-3 text-gray-900 font-semibold text-right whitespace-nowrap">
+                        {currSym}{item.amount.toLocaleString()}
+                      </td>
+                      <td className="py-3 text-right">
+                        <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                          item.status === 'paid' ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-600'
+                        }`}>
+                          {item.status}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Billing FAQ */}
+      <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5 md:p-6">
+        <h3 className="font-bold text-gray-900 mb-4">Billing FAQ</h3>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6">
+          {[
+            { q: 'When am I charged?',                    a: 'On the day you upgrade and monthly on the same date. Paystack handles recurring billing automatically.' },
+            { q: 'What happens when I hit the AI limit?', a: 'AI replies pause. Customers get a polite fallback message. Manual replies still work. Upgrade to resume.' },
+            { q: 'Can I cancel anytime?',                 a: 'Yes. You keep full access until the end of your billing period. No refunds for partial months.' },
+            { q: 'Do unused AI replies roll over?',       a: `No. The counter resets on the 1st of each calendar month (next reset: ${resetDate}).` },
+          ].map(({ q, a }) => (
+            <div key={q}>
+              <p className="text-sm font-semibold text-gray-900 mb-1">{q}</p>
+              <p className="text-xs text-gray-500 leading-relaxed">{a}</p>
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );
