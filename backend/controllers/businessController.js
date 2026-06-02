@@ -347,15 +347,11 @@ exports.getAnalytics = async (req, res) => {
   try {
     const businessId = req.user.business._id;
 
-    // Build date range for last 7 days
-    const days = [];
-    for (let i = 6; i >= 0; i--) {
-      const d = new Date();
-      d.setDate(d.getDate() - i);
-      d.setHours(0, 0, 0, 0);
-      days.push(d);
-    }
-    const dayLabels = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    // Last 7 days date boundary — use lastMessageAt (indexed) for weekly query
+    const now = new Date();
+    const sevenDaysAgo = new Date(now);
+    sevenDaysAgo.setDate(now.getDate() - 6);
+    sevenDaysAgo.setHours(0, 0, 0, 0);
 
     const [convStats, revenue, recentConvs, paymentBreakdown, weeklyRaw] = await Promise.all([
       Conversation.aggregate([
@@ -379,26 +375,36 @@ exports.getAnalytics = async (req, res) => {
         { $match: { business: businessId, status: 'success' } },
         { $group: { _id: '$paymentMethod', total: { $sum: '$amount' }, count: { $sum: 1 } } },
       ]),
-      // Weekly messages: count conversations created per day for last 7 days
+      // Weekly activity: group by exact calendar date using indexed lastMessageAt
       Conversation.aggregate([
-        { $match: { business: businessId, createdAt: { $gte: days[0] } } },
+        { $match: { business: businessId, lastMessageAt: { $gte: sevenDaysAgo } } },
         { $group: {
-            _id: { $dayOfWeek: '$createdAt' }, // 1=Sun..7=Sat
+            _id: {
+              year:  { $year: '$lastMessageAt' },
+              month: { $month: '$lastMessageAt' },
+              day:   { $dayOfMonth: '$lastMessageAt' },
+            },
             messages: { $sum: 1 },
         }},
-      ]),
+      ]).catch(() => []),
     ]);
 
     const stats = convStats[0] || { total: 0, open: 0, closed: 0, leads: 0 };
     const revenueData = revenue[0] || { total: 0, count: 0 };
 
-    // Map weekly raw into ordered day array matching last 7 days
+    // Build accurate 7-day array keyed by "YYYY-M-D"
+    const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
     const weeklyMap = {};
-    weeklyRaw.forEach(r => { weeklyMap[r._id] = r.messages; });
-    const weeklyMessages = days.map(d => ({
-      day: dayLabels[d.getDay()],
-      messages: weeklyMap[d.getDay() + 1] || 0, // MongoDB dayOfWeek: 1=Sun
-    }));
+    (weeklyRaw || []).forEach(r => {
+      weeklyMap[`${r._id.year}-${r._id.month}-${r._id.day}`] = r.messages;
+    });
+    const weeklyMessages = [];
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date(now);
+      d.setDate(now.getDate() - i);
+      const key = `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+      weeklyMessages.push({ day: DAY_LABELS[d.getDay()], messages: weeklyMap[key] || 0 });
+    }
 
     res.json({
       success: true,
@@ -412,6 +418,7 @@ exports.getAnalytics = async (req, res) => {
       },
     });
   } catch (err) {
+    logger.error(`getAnalytics error: ${err.message}`);
     res.status(500).json({ success: false, message: err.message });
   }
 };
