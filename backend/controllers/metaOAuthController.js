@@ -9,6 +9,52 @@ const logger = require('../config/logger');
 const META_API_VERSION = 'v21.0';
 const GRAPH_URL = `https://graph.facebook.com/${META_API_VERSION}`;
 
+// ── Temporary server-side handoff store ────────────────────────────────────
+// Meta's redirect back to us can only carry a `code`, not our session — so we
+// exchange the code for a long-lived token here, then need to hand that
+// token to the frontend if the user has multiple WhatsApp numbers to pick
+// from. Previously this was done by putting the token in the redirect URL
+// query string, which leaks it into browser history and server access logs.
+// Instead we stash it server-side behind a random opaque key with a short
+// TTL, and only ever put that key in the URL.
+//
+// NOTE: this is in-memory and per-process. If you run more than one backend
+// instance behind a load balancer, replace this with Redis (or similar)
+// so the handoff survives landing on a different instance.
+const pendingConnections = new Map(); // key -> { data, expiresAt }
+const PENDING_TTL_MS = 10 * 60 * 1000; // 10 minutes to complete phone selection
+
+function stashPending(data) {
+  const key = crypto.randomBytes(24).toString('hex');
+  pendingConnections.set(key, { data, expiresAt: Date.now() + PENDING_TTL_MS });
+  return key;
+}
+function peekPending(key) {
+  const entry = pendingConnections.get(key);
+  if (!entry) return null;
+  if (Date.now() > entry.expiresAt) {
+    pendingConnections.delete(key);
+    return null;
+  }
+  return entry.data;
+}
+function consumePending(key) {
+  const data = peekPending(key);
+  pendingConnections.delete(key);
+  return data;
+}
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of pendingConnections) {
+    if (now > entry.expiresAt) pendingConnections.delete(key);
+  }
+}, 5 * 60 * 1000).unref();
+
+// ── State signing (prevents tampering with the userId embedded in state) ──
+function signState(userId, nonce) {
+  return crypto.createHmac('sha256', process.env.JWT_SECRET).update(`${userId}:${nonce}`).digest('hex');
+}
+
 // ── Step 1: Build and return the Meta OAuth URL ───────────────────────────────
 // Frontend hits GET /api/meta/oauth-url?state=<jwt_user_id>
 // We return the URL; frontend does window.location.href = url
@@ -32,7 +78,8 @@ exports.getOAuthUrl = (req, res) => {
   }
 
   const nonce = crypto.randomBytes(16).toString('hex');
-  const statePayload = Buffer.from(`${req.user._id}:${nonce}`).toString('base64url');
+  const sig = signState(req.user._id, nonce);
+  const statePayload = Buffer.from(`${req.user._id}:${nonce}:${sig}`).toString('base64url');
 
   const redirectUri = `${BACKEND_URL}/api/meta/oauth-callback`;
 
@@ -79,13 +126,22 @@ exports.oauthCallback = async (req, res) => {
     return res.redirect(`${FRONTEND_URL}/connect-whatsapp?error=invalid_callback`);
   }
 
-  // Decode state to get userId
+  // Decode state to get userId, and verify it wasn't tampered with
   let userId;
   try {
     const decoded = Buffer.from(state, 'base64url').toString('utf8');
-    [userId] = decoded.split(':');
-    if (!userId) throw new Error('Empty userId in state');
-  } catch {
+    const [decodedUserId, nonce, sig] = decoded.split(':');
+    if (!decodedUserId || !nonce || !sig) throw new Error('Malformed state');
+
+    const expectedSig = signState(decodedUserId, nonce);
+    const sigBuf = Buffer.from(sig);
+    const expBuf = Buffer.from(expectedSig);
+    if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
+      throw new Error('State signature mismatch');
+    }
+    userId = decodedUserId;
+  } catch (err) {
+    logger.warn(`Meta OAuth callback: invalid state — ${err.message}`);
     return res.redirect(`${FRONTEND_URL}/connect-whatsapp?error=invalid_state`);
   }
 
@@ -145,10 +201,10 @@ exports.oauthCallback = async (req, res) => {
     
 
     if (phoneNumbers.length === 0) {
-      // No WhatsApp numbers found — redirect with error
-      return res.redirect(
-        `${FRONTEND_URL}/connect-whatsapp?error=no_phone_numbers&token=${encodeURIComponent(longLivedToken)}`
-      );
+      // No WhatsApp numbers found — nothing actionable for the frontend to
+      // do with the token, so just report the error. (Previously this put
+      // the long-lived token straight into the redirect URL.)
+      return res.redirect(`${FRONTEND_URL}/connect-whatsapp?error=no_phone_numbers`);
     }
 
     if (phoneNumbers.length === 1) {
@@ -167,9 +223,10 @@ exports.oauthCallback = async (req, res) => {
       return res.redirect(`${FRONTEND_URL}/connect-whatsapp?success=true&phone=${encodeURIComponent(phone.displayNumber)}`);
     }
 
-    // Multiple phones — let user pick (send them to frontend with token + options)
-    const encoded = encodeURIComponent(JSON.stringify({ token: longLivedToken, phones: phoneNumbers }));
-    return res.redirect(`${FRONTEND_URL}/connect-whatsapp?step=pick_phone&data=${encoded}`);
+    // Multiple phones — stash the token + options server-side and hand the
+    // frontend only an opaque key, instead of the token itself.
+    const key = stashPending({ userId, token: longLivedToken, phones: phoneNumbers });
+    return res.redirect(`${FRONTEND_URL}/connect-whatsapp?step=pick_phone&key=${key}`);
 
   } catch (err) {
     const metaError = err.response?.data?.error?.message || err.message;
@@ -178,14 +235,51 @@ exports.oauthCallback = async (req, res) => {
   }
 };
 
-// ── Step 3 (multi-phone): User picks which number to use ──────────────────────
-// POST /api/meta/select-phone  { phoneNumberId, accessToken, wabaId }
-exports.selectPhone = async (req, res) => {
-  const { phoneNumberId, accessToken, wabaId } = req.body;
+// ── Step 2b (multi-phone): frontend fetches the pending options ──────────────
+// GET /api/meta/pending-connection?key=xxx
+// Returns the phone numbers found for this OAuth attempt, without ever
+// exposing the underlying access token to the client.
+exports.getPendingConnection = (req, res) => {
+  const { key } = req.query;
+  if (!key) return res.status(400).json({ success: false, message: 'key is required' });
 
-  if (!phoneNumberId || !accessToken) {
-    return res.status(400).json({ success: false, message: 'phoneNumberId and accessToken are required' });
+  const pending = peekPending(key);
+  if (!pending || String(pending.userId) !== String(req.user._id)) {
+    return res.status(404).json({ success: false, message: 'This connection request has expired. Please reconnect WhatsApp.' });
   }
+
+  res.json({
+    success: true,
+    data: {
+      phones: pending.phones.map(({ phoneNumberId, displayNumber, verifiedName, wabaId, wabaName }) => ({
+        phoneNumberId, displayNumber, verifiedName, wabaId, wabaName,
+      })),
+    },
+  });
+};
+
+// ── Step 3 (multi-phone): User picks which number to use ──────────────────────
+// POST /api/meta/select-phone  { key, phoneNumberId }
+// The access token is never sent by the client — it's pulled from the
+// server-side stash created in oauthCallback, keyed by the opaque `key`.
+exports.selectPhone = async (req, res) => {
+  const { key, phoneNumberId } = req.body;
+
+  if (!key || !phoneNumberId) {
+    return res.status(400).json({ success: false, message: 'key and phoneNumberId are required' });
+  }
+
+  const pending = peekPending(key);
+  if (!pending || String(pending.userId) !== String(req.user._id)) {
+    return res.status(400).json({ success: false, message: 'This connection request has expired. Please reconnect WhatsApp.' });
+  }
+
+  const phone = pending.phones.find(p => p.phoneNumberId === phoneNumberId);
+  if (!phone) {
+    return res.status(400).json({ success: false, message: 'Invalid phone number selection' });
+  }
+
+  const accessToken = pending.token;
 
   try {
     // Verify the token actually works for this phone number
@@ -207,6 +301,8 @@ exports.selectPhone = async (req, res) => {
     if (!business) {
       return res.status(404).json({ success: false, message: 'Business not found' });
     }
+
+    consumePending(key); // one-time use — burn it once the connection succeeds
 
     logger.info(`WhatsApp phone selected for user ${req.user._id}: ${phoneNumberId}`);
     res.json({ success: true, message: 'WhatsApp connected successfully', business });

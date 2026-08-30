@@ -35,10 +35,14 @@ export default function WhatsAppConnect() {
   const [status,         setStatus]         = useState('idle');
   const [errorMsg,       setErrorMsg]       = useState('');
   const [connectedPhone, setConnectedPhone] = useState('');
-  const [phonePicker,    setPhonePicker]    = useState(null);   // { token, phones[] }
+  const [phonePicker,    setPhonePicker]    = useState(null);   // { key, phones[] }
   const [pickLoading,    setPickLoading]    = useState(false);
 
   // ── On mount: parse redirect params or check existing token ──────────────
+  // Note: the backend never puts the WhatsApp access token in this URL — for
+  // the multi-phone case it hands us an opaque, short-lived `key` and we
+  // fetch the phone list ourselves via a protected endpoint. This keeps the
+  // token out of the URL bar, browser history, and server access logs.
   useEffect(() => {
     const p = new URLSearchParams(window.location.search);
     if (p.toString()) window.history.replaceState({}, '', window.location.pathname);
@@ -61,14 +65,18 @@ export default function WhatsAppConnect() {
       setConnectedPhone(decodeURIComponent(p.get('phone') || ''));
       return;
     }
-    if (p.get('step') === 'pick_phone' && p.get('data')) {
-      try {
-        setPhonePicker(JSON.parse(decodeURIComponent(p.get('data'))));
-        setStatus('pick_phone');
-      } catch {
-        setStatus('error');
-        setErrorMsg('Could not read phone list from Facebook. Please try again.');
-      }
+    if (p.get('step') === 'pick_phone' && p.get('key')) {
+      const key = p.get('key');
+      (async () => {
+        try {
+          const { data } = await api.get('/meta/pending-connection', { params: { key } });
+          setPhonePicker({ key, phones: data.data.phones });
+          setStatus('pick_phone');
+        } catch {
+          setStatus('error');
+          setErrorMsg('This connection attempt expired. Please try again.');
+        }
+      })();
       return;
     }
 
@@ -143,9 +151,8 @@ export default function WhatsAppConnect() {
     setPickLoading(true);
     try {
       await api.post('/meta/select-phone', {
+        key:           phonePicker.key,
         phoneNumberId: phone.phoneNumberId,
-        accessToken:   phonePicker.token,
-        wabaId:        phone.wabaId,
       });
       setStatus('connected');
       setConnectedPhone(phone.displayNumber);

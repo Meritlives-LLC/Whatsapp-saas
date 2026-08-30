@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { encrypt, decrypt } = require('../utils/crypto');
 
 const businessSchema = new mongoose.Schema({
   owner: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
@@ -11,8 +12,15 @@ const businessSchema = new mongoose.Schema({
 
   // WhatsApp Config
   whatsappPhoneNumberId: { type: String },
-  whatsappAccessToken:   { type: String },
-  whatsappVerifyToken:   { type: String },
+  // Encrypted at rest (see utils/crypto.js). The set/get run transparently:
+  // application code reading `business.whatsappAccessToken` still gets the
+  // plaintext token; only the DB document stores ciphertext.
+  whatsappAccessToken: {
+    type: String,
+    set: encrypt,
+    get: decrypt,
+  },
+  whatsappVerifyToken: { type: String },
 
   // Payment Details (bank transfer)
   paymentDetails: {
@@ -40,6 +48,18 @@ const businessSchema = new mongoose.Schema({
   },
 
   isActive: { type: Boolean, default: true },
-}, { timestamps: true });
+}, {
+  timestamps: true,
+  // Never let the raw or encrypted token leave the server in an API response.
+  // Applies whether the document is sent via res.json(business) directly or
+  // nested inside another payload (e.g. { data: business }).
+  toJSON: {
+    transform(doc, ret) {
+      delete ret.whatsappAccessToken;
+      delete ret.whatsappVerifyToken;
+      return ret;
+    },
+  },
+});
 
 module.exports = mongoose.model('Business', businessSchema);

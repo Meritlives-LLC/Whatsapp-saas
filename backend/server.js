@@ -10,6 +10,10 @@ const REQUIRED_ENV = [
   'DEEPSEEK_API_KEY',
   'PAYSTACK_SECRET_KEY',
   'FRONTEND_URL',
+  'BACKEND_URL',
+  'META_APP_ID',
+  'META_APP_SECRET',
+  'ENCRYPTION_KEY',
 ];
 const missing = REQUIRED_ENV.filter(k => !process.env[k]);
 if (missing.length > 0) {
@@ -42,7 +46,9 @@ const {
   sanitize,
   globalLimiter,
   requestLogger,
+  webhookLimiter,
 } = require('./middlewares/security');
+const verifyMetaSignature = require('./middlewares/verifyMetaSignature');
 const xss = require('xss-clean');
 
 // Ensure logs directory exists
@@ -88,10 +94,23 @@ app.set('trust proxy', 1);
 
 // ─── CRITICAL: Webhook routes BEFORE any body parsing ────────
 // Meta sends the webhook as plain JSON. We must handle it before
-// helmet / sanitize / rate-limiter modifies or blocks anything.
+// helmet / sanitize / global rate-limiter modifies or blocks anything.
 // The GET verification endpoint must return plain text, not JSON.
-app.get('/api/webhook',  (req, res) => webhookCtrl.verifyWebhook(req, res));
-app.post('/api/webhook', express.json(), (req, res) => webhookCtrl.receiveMessage(req, res));
+//
+// The POST route still gets its OWN rate limiter (webhookLimiter) and a
+// mandatory signature check (verifyMetaSignature) — this is the only thing
+// standing between the public internet and your AI/DB, since phoneNumberId
+// alone is not a secret. express.json's `verify` callback stashes the raw
+// body on req.rawBody so the signature can be checked against the exact
+// bytes Meta signed (parsing first, then re-stringifying, would not match).
+app.get('/api/webhook', (req, res) => webhookCtrl.verifyWebhook(req, res));
+app.post(
+  '/api/webhook',
+  webhookLimiter,
+  express.json({ verify: (req, res, buf) => { req.rawBody = buf; } }),
+  verifyMetaSignature,
+  (req, res) => webhookCtrl.receiveMessage(req, res)
+);
 
 // ─── Security middleware (applied AFTER webhook routes) ──────
 app.use(helmetConfig);
