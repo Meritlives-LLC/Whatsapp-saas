@@ -12,6 +12,14 @@ const businessSchema = new mongoose.Schema({
 
   // WhatsApp Config
   whatsappPhoneNumberId: { type: String },
+  // The WhatsApp Business Account (WABA) that owns whatsappPhoneNumberId.
+  // Needed to subscribe this app to the customer's webhooks
+  // (POST /{wabaId}/subscribed_apps) and to re-discover phone numbers later.
+  whatsappBusinessAccountId: { type: String },
+  // Human-readable copies of the phone's identity, for display only — the
+  // source of truth is always Meta, looked up via whatsappPhoneNumberId.
+  whatsappDisplayNumber: { type: String },
+  whatsappVerifiedName: { type: String },
   // Encrypted at rest (see utils/crypto.js). The set/get run transparently:
   // application code reading `business.whatsappAccessToken` still gets the
   // plaintext token; only the DB document stores ciphertext.
@@ -21,6 +29,14 @@ const businessSchema = new mongoose.Schema({
     get: decrypt,
   },
   whatsappVerifyToken: { type: String },
+  // The two-step-verification PIN used to register whatsappPhoneNumberId
+  // with Cloud API (POST /{phoneNumberId}/register). Kept (encrypted) so a
+  // future re-registration doesn't require the customer to reset it.
+  whatsappRegistrationPin: {
+    type: String,
+    set: encrypt,
+    get: decrypt,
+  },
 
   // Payment Details (bank transfer)
   paymentDetails: {
@@ -57,6 +73,7 @@ const businessSchema = new mongoose.Schema({
     transform(doc, ret) {
       delete ret.whatsappAccessToken;
       delete ret.whatsappVerifyToken;
+      delete ret.whatsappRegistrationPin;
       return ret;
     },
   },

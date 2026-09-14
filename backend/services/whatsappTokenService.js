@@ -3,6 +3,7 @@ const Business = require('../models/Business');
 const logger = require('../config/logger');
 const emailService = require('./emailService');
 const User = require('../models/User');
+const { GRAPH_URL } = require('../config/meta');
 
 /**
  * Verify a WhatsApp access token is still valid
@@ -10,7 +11,7 @@ const User = require('../models/User');
 const verifyToken = async (phoneNumberId, accessToken) => {
   try {
     const res = await axios.get(
-      `https://graph.facebook.com/v21.0/${phoneNumberId}`,
+      `${GRAPH_URL}/${phoneNumberId}`,
       { headers: { Authorization: `Bearer ${accessToken}` } }
     );
     return { valid: true, data: res.data };

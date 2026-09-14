@@ -1,26 +1,34 @@
 // backend/controllers/metaOAuthController.js
-// Handles the full Meta OAuth 2.0 flow for WhatsApp Business connection
+// Handles WhatsApp Business connection for SaaS customers via two paths:
+//
+//   1. Embedded Signup (FB.login() popup) — the primary, Meta-recommended
+//      path. See embeddedSignupCallback() below.
+//   2. Classic OAuth redirect (/dialog/oauth) — fallback used only when
+//      META_CONFIG_ID isn't configured on the server. See getOAuthUrl() /
+//      oauthCallback() below.
+//
+// Both paths end up at finalizeConnection(), which performs the Meta
+// post-signup operations (subscribe the app to the customer's WABA,
+// register the phone number for Cloud API) and saves the connection
+// against the currently authenticated SaaS user's Business record.
 
-const axios = require('axios');
 const crypto = require('crypto');
+const axios = require('axios');
 const Business = require('../models/Business');
 const logger = require('../config/logger');
+const { GRAPH_URL } = require('../config/meta');
+const { buildState, verifyState } = require('../utils/metaState');
+const metaGraph = require('../services/metaGraphService');
 
-const META_API_VERSION = 'v21.0';
-const GRAPH_URL = `https://graph.facebook.com/${META_API_VERSION}`;
-
-// ── Temporary server-side handoff store ────────────────────────────────────
-// Meta's redirect back to us can only carry a `code`, not our session — so we
-// exchange the code for a long-lived token here, then need to hand that
-// token to the frontend if the user has multiple WhatsApp numbers to pick
-// from. Previously this was done by putting the token in the redirect URL
-// query string, which leaks it into browser history and server access logs.
-// Instead we stash it server-side behind a random opaque key with a short
-// TTL, and only ever put that key in the URL.
+// ── Temporary server-side handoff store (multi-phone selection) ───────────
+// Used when a connection attempt surfaces more than one eligible phone
+// number and the customer needs to pick one. We stash the long-lived token
+// + candidate phones behind a random opaque key with a short TTL, and only
+// ever hand the frontend that key — never the token itself.
 //
 // NOTE: this is in-memory and per-process. If you run more than one backend
-// instance behind a load balancer, replace this with Redis (or similar)
-// so the handoff survives landing on a different instance.
+// instance behind a load balancer, replace this with Redis (or similar) so
+// the handoff survives landing on a different instance.
 const pendingConnections = new Map(); // key -> { data, expiresAt }
 const PENDING_TTL_MS = 10 * 60 * 1000; // 10 minutes to complete phone selection
 
@@ -50,36 +58,168 @@ setInterval(() => {
   }
 }, 5 * 60 * 1000).unref();
 
-// ── State signing (prevents tampering with the userId embedded in state) ──
-function signState(userId, nonce) {
-  return crypto.createHmac('sha256', process.env.JWT_SECRET).update(`${userId}:${nonce}`).digest('hex');
+const publicPhone = ({ phoneNumberId, displayNumber, verifiedName, wabaId, wabaName }) => ({
+  phoneNumberId, displayNumber, verifiedName, wabaId, wabaName,
+});
+
+// ── Shared post-signup finalization ────────────────────────────────────────
+// Performs the Meta operations that must happen after a customer completes
+// signup, before their number can actually send/receive messages:
+//   1. Subscribe this app to the customer's WABA (required for webhooks).
+//   2. Register the phone number for Cloud API with a generated 2FA PIN
+//      (required — a freshly-signed-up number cannot send/receive until
+//      this succeeds).
+// Then saves everything against the SaaS user's Business record.
+//
+// Neither (1) nor (2) failing blocks saving the connection — the token and
+// IDs are still valid and the customer is still the verified owner — but
+// failures are surfaced as warnings so they aren't silently swallowed.
+async function finalizeConnection({ userId, wabaId, phoneNumberId, accessToken }) {
+  const details = await metaGraph
+    .getPhoneNumberDetails(phoneNumberId, accessToken)
+    .catch((err) => {
+      logger.warn(`Could not fetch phone details for ${phoneNumberId}: ${err.response?.data?.error?.message || err.message}`);
+      return {};
+    });
+
+  const subscribeResult = await metaGraph.subscribeAppToWaba(wabaId, accessToken);
+
+  const pin = crypto.randomInt(100000, 999999).toString();
+  const registerResult = await metaGraph.registerPhoneNumber(phoneNumberId, accessToken, pin);
+
+  const update = {
+    whatsappPhoneNumberId: phoneNumberId,
+    whatsappBusinessAccountId: wabaId,
+    whatsappAccessToken: accessToken,
+    whatsappVerifyToken: process.env.WHATSAPP_VERIFY_TOKEN || 'wa_verify_token',
+    whatsappDisplayNumber: details.displayNumber || '',
+    whatsappVerifiedName: details.verifiedName || '',
+  };
+  if (registerResult.registered) {
+    update.whatsappRegistrationPin = pin;
+  }
+
+  const business = await Business.findOneAndUpdate({ owner: userId }, update, { new: true });
+
+  const warnings = [];
+  if (!subscribeResult.subscribed) {
+    warnings.push(
+      'We could not subscribe your account to WhatsApp webhooks automatically, so incoming messages may not arrive yet. Please contact support.'
+    );
+  }
+  if (!registerResult.registered) {
+    warnings.push(
+      'We could not automatically activate this number for messaging. It may need its two-step verification PIN reset in Meta Business Manager before it can send or receive messages.'
+    );
+  }
+
+  return { business, displayNumber: details.displayNumber, warnings };
 }
 
-// ── Step 1: Build and return the Meta OAuth URL ───────────────────────────────
-// Frontend hits GET /api/meta/oauth-url?state=<jwt_user_id>
-// We return the URL; frontend does window.location.href = url
-exports.getOAuthUrl = (req, res) => {
+// ══════════════════════════════════════════════════════════════════════════
+// PATH 1 — EMBEDDED SIGNUP (primary path)
+// ══════════════════════════════════════════════════════════════════════════
+//
+// The frontend launches FB.login() with config_id (see WhatsAppConnect.jsx).
+// On completion, Meta gives the page two independent things:
+//   - FB.login()'s own callback fires with resp.authResponse.code
+//   - A `window.postMessage` event of type WA_EMBEDDED_SIGNUP carries the
+//     waba_id and (usually) phone_number_id the customer just set up
+// resp.authResponse never contains a usable `state` — that field is a
+// `/dialog/oauth`-only concept — so this endpoint identifies the user the
+// normal way: it's a protected route, called in-page while the SaaS session
+// is still live, and req.user comes from the standard auth middleware. No
+// state token is needed here at all.
+//
+// POST /api/meta/embedded-signup-callback  { code, wabaId, phoneNumberId }
+exports.embeddedSignupCallback = async (req, res) => {
+  const { code, wabaId, phoneNumberId } = req.body || {};
 
-  // ✅ ADD THIS FIRST (BEFORE ANYTHING ELSE)
-  if (!req.user) {
-    return res.status(401).json({
+  if (!code) {
+    return res.status(400).json({ success: false, message: 'Missing authorization code from Meta.' });
+  }
+  if (!wabaId) {
+    // The WA_EMBEDDED_SIGNUP FINISH event should always include this on a
+    // successful completion. If it's missing, either the customer's domain
+    // isn't in the Meta app's Allowed Domains / Valid OAuth Redirect URIs
+    // (required for the postMessage to be delivered at all), or the flow
+    // didn't actually finish.
+    return res.status(400).json({
       success: false,
-      message: 'Unauthorized'
+      message: 'Meta did not return a WhatsApp Business Account for this connection. Please try again, or contact support if this keeps happening.',
     });
   }
 
-  const { META_APP_ID, META_CONFIG_ID, FRONTEND_URL, BACKEND_URL } = process.env;
+  const { META_APP_ID, META_APP_SECRET } = process.env;
+  if (!META_APP_ID || !META_APP_SECRET) {
+    return res.status(500).json({ success: false, message: 'META_APP_ID/META_APP_SECRET is not configured on the server.' });
+  }
+
+  try {
+    const shortLivedToken = await metaGraph.exchangeEmbeddedCodeForToken(code);
+    const longLivedToken = await metaGraph.getLongLivedToken(shortLivedToken);
+
+    let targetPhoneNumberId = phoneNumberId;
+
+    if (!targetPhoneNumberId) {
+      // Bypass-phone-selection configurations (featureType: only_waba_sharing)
+      // return only a waba_id from the message event — look up its numbers.
+      const phones = await metaGraph.getPhoneNumbersForWaba(wabaId, longLivedToken);
+
+      if (phones.length === 0) {
+        return res.status(400).json({ success: false, message: 'No eligible WhatsApp phone numbers were found on this account.' });
+      }
+      if (phones.length > 1) {
+        const key = stashPending({ userId: req.user._id, token: longLivedToken, phones });
+        return res.json({ success: true, step: 'pick_phone', key, phones: phones.map(publicPhone) });
+      }
+      targetPhoneNumberId = phones[0].phoneNumberId;
+    }
+
+    const { business, displayNumber, warnings } = await finalizeConnection({
+      userId: req.user._id,
+      wabaId,
+      phoneNumberId: targetPhoneNumberId,
+      accessToken: longLivedToken,
+    });
+
+    if (!business) {
+      return res.status(404).json({ success: false, message: 'Business not found for this account.' });
+    }
+
+    logger.info(`WhatsApp connected via Embedded Signup for user ${req.user._id}: waba=${wabaId} phone=${targetPhoneNumberId}`);
+    return res.json({ success: true, connected: true, phone: displayNumber || '', warnings });
+  } catch (err) {
+    const metaError = err.response?.data?.error?.message || err.message;
+    logger.error(`Embedded Signup callback error for user ${req.user._id}: ${metaError}`);
+    return res.status(400).json({ success: false, message: `Connection failed: ${metaError}` });
+  }
+};
+
+// ══════════════════════════════════════════════════════════════════════════
+// PATH 2 — CLASSIC OAUTH REDIRECT (fallback when META_CONFIG_ID is unset)
+// ══════════════════════════════════════════════════════════════════════════
+
+// Step 1: Build and return the Meta OAuth URL.
+// GET /api/meta/oauth-url
+exports.getOAuthUrl = (req, res) => {
+  if (!req.user) {
+    return res.status(401).json({ success: false, message: 'Unauthorized' });
+  }
+
+  const { META_APP_ID, META_CONFIG_ID, BACKEND_URL } = process.env;
 
   if (!META_APP_ID) {
-    return res.status(500).json({
-      success: false,
-      message: 'META_APP_ID is not configured on the server.',
-    });
+    return res.status(500).json({ success: false, message: 'META_APP_ID is not configured on the server.' });
   }
 
-  const nonce = crypto.randomBytes(16).toString('hex');
-  const sig = signState(req.user._id, nonce);
-  const statePayload = Buffer.from(`${req.user._id}:${nonce}:${sig}`).toString('base64url');
+  let statePayload;
+  try {
+    statePayload = buildState(req.user._id);
+  } catch (err) {
+    logger.error(`Could not build OAuth state: ${err.message}`);
+    return res.status(500).json({ success: false, message: 'Server misconfigured (JWT_SECRET missing).' });
+  }
 
   const redirectUri = `${BACKEND_URL}/api/meta/oauth-callback`;
 
@@ -95,28 +235,26 @@ exports.getOAuthUrl = (req, res) => {
     state: statePayload,
   };
 
-  // If META_CONFIG_ID is set, use the Embedded Signup flow.
-  // This gives non-technical users a guided in-app experience instead of
-  // a raw OAuth redirect.  The config_id tells Meta which login
-  // configuration (permissions, UI customisation) to use.
+  // If META_CONFIG_ID is set, the frontend prefers the Embedded Signup path
+  // above and only falls back to this URL if the FB JS SDK fails to load.
+  // Still include config_id here so that fallback also gets the guided
+  // Embedded Signup UI rather than a bare Facebook Login dialog.
   if (META_CONFIG_ID) {
     oauthParams.config_id = META_CONFIG_ID;
   }
 
   const params = new URLSearchParams(oauthParams);
-
   const oauthUrl = `https://www.facebook.com/dialog/oauth?${params.toString()}`;
 
   return res.json({ success: true, url: oauthUrl, state: statePayload });
 };
 
-// ── Step 2: Meta redirects back here with ?code=xxx&state=xxx ─────────────────
+// Step 2: Meta redirects back here with ?code=xxx&state=xxx
 // GET /api/meta/oauth-callback
 exports.oauthCallback = async (req, res) => {
   const { code, state, error, error_description } = req.query;
-  const { META_APP_ID, META_APP_SECRET, BACKEND_URL, FRONTEND_URL } = process.env;
+  const { BACKEND_URL, FRONTEND_URL } = process.env;
 
-  // Handle user denial
   if (error) {
     logger.warn(`Meta OAuth denied: ${error} — ${error_description}`);
     return res.redirect(`${FRONTEND_URL}/connect-whatsapp?error=denied`);
@@ -126,108 +264,38 @@ exports.oauthCallback = async (req, res) => {
     return res.redirect(`${FRONTEND_URL}/connect-whatsapp?error=invalid_callback`);
   }
 
-  // Decode state to get userId, and verify it wasn't tampered with
   let userId;
   try {
-    const decoded = Buffer.from(state, 'base64url').toString('utf8');
-    const [decodedUserId, nonce, sig] = decoded.split(':');
-    if (!decodedUserId || !nonce || !sig) throw new Error('Malformed state');
-
-    const expectedSig = signState(decodedUserId, nonce);
-    const sigBuf = Buffer.from(sig);
-    const expBuf = Buffer.from(expectedSig);
-    if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
-      throw new Error('State signature mismatch');
-    }
-    userId = decodedUserId;
+    userId = verifyState(state);
   } catch (err) {
     logger.warn(`Meta OAuth callback: invalid state — ${err.message}`);
     return res.redirect(`${FRONTEND_URL}/connect-whatsapp?error=invalid_state`);
   }
 
   try {
-    // ── Exchange authorization code for user access token ──────────────────
-    const tokenRes = await axios.get(`${GRAPH_URL}/oauth/access_token`, {
-      params: {
-        client_id: META_APP_ID,
-        client_secret: META_APP_SECRET,
-        redirect_uri: `${BACKEND_URL}/api/meta/oauth-callback`,
-        code,
-      },
-    });
+    const redirectUri = `${BACKEND_URL}/api/meta/oauth-callback`;
+    const shortLivedToken = await metaGraph.exchangeCodeForToken({ code, redirectUri });
+    const longLivedToken = await metaGraph.getLongLivedToken(shortLivedToken);
 
-    const userAccessToken = tokenRes.data.access_token;
-
-    // ── Exchange short-lived token for a long-lived token (60 days) ────────
-    const longLivedRes = await axios.get(`${GRAPH_URL}/oauth/access_token`, {
-      params: {
-        grant_type: 'fb_exchange_token',
-        client_id: META_APP_ID,
-        client_secret: META_APP_SECRET,
-        fb_exchange_token: userAccessToken,
-      },
-    });
-
-    const longLivedToken = longLivedRes.data.access_token;
-
-    // ── Fetch the WhatsApp Business Account(s) linked to this user ─────────
-    const wabaRes = await axios.get(`${GRAPH_URL}/me/businesses`, {
-      params: {
-        fields: 'id,name,whatsapp_business_accounts{id,name,phone_numbers{id,display_phone_number,verified_name}}',
-        access_token: longLivedToken,
-      },
-    });
-
-    const businesses = wabaRes.data.data || [];
-
-    // Collect all phone numbers across all WABAs
-    const phoneNumbers = [];
-    for (const biz of businesses) {
-      const wabas = biz.whatsapp_business_accounts?.data || [];
-      for (const waba of wabas) {
-        const phones = waba.phone_numbers?.data || [];
-        for (const phone of phones) {
-          phoneNumbers.push({
-            phoneNumberId: phone.id,
-            displayNumber: phone.display_phone_number,
-            verifiedName: phone.verified_name,
-            wabaId: waba.id,
-            wabaName: waba.name,
-          });
-        }
-      }
-    }
-
-    
+    const phoneNumbers = await metaGraph.getBusinessesAndPhoneNumbers(longLivedToken);
 
     if (phoneNumbers.length === 0) {
-      // No WhatsApp numbers found — nothing actionable for the frontend to
-      // do with the token, so just report the error. (Previously this put
-      // the long-lived token straight into the redirect URL.)
       return res.redirect(`${FRONTEND_URL}/connect-whatsapp?error=no_phone_numbers`);
     }
 
     if (phoneNumbers.length === 1) {
-      // Only one phone — auto-save it
       const phone = phoneNumbers[0];
-      await Business.findOneAndUpdate(
-        { owner: userId },
-        {
-          whatsappPhoneNumberId: phone.phoneNumberId,
-          whatsappAccessToken: longLivedToken,
-          whatsappVerifyToken: process.env.WHATSAPP_VERIFY_TOKEN || 'wa_verify_token',
-        }
-      );
-
-      logger.info(`WhatsApp auto-connected for user ${userId}: ${phone.displayNumber}`);
-      return res.redirect(`${FRONTEND_URL}/connect-whatsapp?success=true&phone=${encodeURIComponent(phone.displayNumber)}`);
+      const { displayNumber } = await finalizeConnection({
+        userId, wabaId: phone.wabaId, phoneNumberId: phone.phoneNumberId, accessToken: longLivedToken,
+      });
+      logger.info(`WhatsApp auto-connected for user ${userId}: ${displayNumber || phone.displayNumber}`);
+      return res.redirect(`${FRONTEND_URL}/connect-whatsapp?success=true&phone=${encodeURIComponent(displayNumber || phone.displayNumber || '')}`);
     }
 
     // Multiple phones — stash the token + options server-side and hand the
     // frontend only an opaque key, instead of the token itself.
     const key = stashPending({ userId, token: longLivedToken, phones: phoneNumbers });
     return res.redirect(`${FRONTEND_URL}/connect-whatsapp?step=pick_phone&key=${key}`);
-
   } catch (err) {
     const metaError = err.response?.data?.error?.message || err.message;
     logger.error(`Meta OAuth callback error: ${metaError}`);
@@ -235,10 +303,13 @@ exports.oauthCallback = async (req, res) => {
   }
 };
 
-// ── Step 2b (multi-phone): frontend fetches the pending options ──────────────
+// ══════════════════════════════════════════════════════════════════════════
+// SHARED — multi-phone selection, disconnect, token status
+// ══════════════════════════════════════════════════════════════════════════
+
 // GET /api/meta/pending-connection?key=xxx
-// Returns the phone numbers found for this OAuth attempt, without ever
-// exposing the underlying access token to the client.
+// Returns the phone numbers found for this connection attempt, without
+// ever exposing the underlying access token to the client.
 exports.getPendingConnection = (req, res) => {
   const { key } = req.query;
   if (!key) return res.status(400).json({ success: false, message: 'key is required' });
@@ -248,20 +319,12 @@ exports.getPendingConnection = (req, res) => {
     return res.status(404).json({ success: false, message: 'This connection request has expired. Please reconnect WhatsApp.' });
   }
 
-  res.json({
-    success: true,
-    data: {
-      phones: pending.phones.map(({ phoneNumberId, displayNumber, verifiedName, wabaId, wabaName }) => ({
-        phoneNumberId, displayNumber, verifiedName, wabaId, wabaName,
-      })),
-    },
-  });
+  res.json({ success: true, data: { phones: pending.phones.map(publicPhone) } });
 };
 
-// ── Step 3 (multi-phone): User picks which number to use ──────────────────────
 // POST /api/meta/select-phone  { key, phoneNumberId }
 // The access token is never sent by the client — it's pulled from the
-// server-side stash created in oauthCallback, keyed by the opaque `key`.
+// server-side stash created earlier, keyed by the opaque `key`.
 exports.selectPhone = async (req, res) => {
   const { key, phoneNumberId } = req.body;
 
@@ -274,29 +337,18 @@ exports.selectPhone = async (req, res) => {
     return res.status(400).json({ success: false, message: 'This connection request has expired. Please reconnect WhatsApp.' });
   }
 
-  const phone = pending.phones.find(p => p.phoneNumberId === phoneNumberId);
+  const phone = pending.phones.find((p) => p.phoneNumberId === phoneNumberId);
   if (!phone) {
     return res.status(400).json({ success: false, message: 'Invalid phone number selection' });
   }
 
-  const accessToken = pending.token;
-
   try {
-    // Verify the token actually works for this phone number
-    await axios.get(`${GRAPH_URL}/${phoneNumberId}`, {
-      headers: { Authorization: `Bearer ${accessToken}` },
+    const { business, displayNumber, warnings } = await finalizeConnection({
+      userId: req.user._id,
+      wabaId: phone.wabaId,
+      phoneNumberId,
+      accessToken: pending.token,
     });
-
-    // Save to this user's business
-    const business = await Business.findOneAndUpdate(
-      { owner: req.user._id },
-      {
-        whatsappPhoneNumberId: phoneNumberId,
-        whatsappAccessToken: accessToken,
-        whatsappVerifyToken: process.env.WHATSAPP_VERIFY_TOKEN || 'wa_verify_token',
-      },
-      { new: true }
-    );
 
     if (!business) {
       return res.status(404).json({ success: false, message: 'Business not found' });
@@ -305,8 +357,7 @@ exports.selectPhone = async (req, res) => {
     consumePending(key); // one-time use — burn it once the connection succeeds
 
     logger.info(`WhatsApp phone selected for user ${req.user._id}: ${phoneNumberId}`);
-    res.json({ success: true, message: 'WhatsApp connected successfully', business });
-
+    res.json({ success: true, message: 'WhatsApp connected successfully', phone: displayNumber || phone.displayNumber, warnings, business });
   } catch (err) {
     const metaError = err.response?.data?.error?.message || err.message;
     logger.error(`selectPhone error: ${metaError}`);
@@ -314,13 +365,21 @@ exports.selectPhone = async (req, res) => {
   }
 };
 
-// ── Disconnect WhatsApp ────────────────────────────────────────────────────────
 // DELETE /api/meta/disconnect
 exports.disconnect = async (req, res) => {
   try {
     await Business.findOneAndUpdate(
       { owner: req.user._id },
-      { $unset: { whatsappPhoneNumberId: '', whatsappAccessToken: '' } }
+      {
+        $unset: {
+          whatsappPhoneNumberId: '',
+          whatsappBusinessAccountId: '',
+          whatsappAccessToken: '',
+          whatsappDisplayNumber: '',
+          whatsappVerifiedName: '',
+          whatsappRegistrationPin: '',
+        },
+      }
     );
     logger.info(`WhatsApp disconnected for user ${req.user._id}`);
     res.json({ success: true, message: 'WhatsApp disconnected' });
@@ -329,7 +388,6 @@ exports.disconnect = async (req, res) => {
   }
 };
 
-// ── Token status check ────────────────────────────────────────────────────────
 // GET /api/meta/token-status
 exports.tokenStatus = async (req, res) => {
   try {
@@ -340,13 +398,15 @@ exports.tokenStatus = async (req, res) => {
 
     const result = await axios.get(`${GRAPH_URL}/${business.whatsappPhoneNumberId}`, {
       headers: { Authorization: `Bearer ${business.whatsappAccessToken}` },
-    }).catch(err => ({ data: null, error: err.response?.data?.error }));
+    }).catch((err) => ({ data: null, error: err.response?.data?.error }));
 
     const connected = !!result.data?.id;
     res.json({
       success: true,
       connected,
       phoneNumberId: business.whatsappPhoneNumberId,
+      wabaId: business.whatsappBusinessAccountId || '',
+      phone: business.whatsappDisplayNumber || '',
     });
   } catch (err) {
     res.json({ success: true, connected: false });

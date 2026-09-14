@@ -14,7 +14,7 @@ function loadFbSdk(appId) {
     if (window.FB) { resolve(window.FB); return; }
 
     window.fbAsyncInit = () => {
-      window.FB.init({ appId, autoLogAppEvents: true, xfbml: false, version: 'v21.0' });
+      window.FB.init({ appId, autoLogAppEvents: true, xfbml: false, version: 'v23.0' });
       resolve(window.FB);
     };
 
@@ -29,6 +29,54 @@ function loadFbSdk(appId) {
   });
 }
 
+// ─── Embedded Signup session-info listener ────────────────────────────────────
+// FB.login()'s own callback only ever gives us resp.authResponse.code — it
+// never carries a `state` value (that's a /dialog/oauth-only concept) and it
+// never carries the WABA/phone IDs either. Meta instead posts those to the
+// window that launched the popup as a `WA_EMBEDDED_SIGNUP` message event.
+// See: https://developers.facebook.com/documentation/business-messaging/whatsapp/embedded-signup/implementation
+function waitForEmbeddedSignupSession(timeoutMs = 25000) {
+  return new Promise((resolve) => {
+    let settled = false;
+
+    const cleanup = () => {
+      clearTimeout(timer);
+      window.removeEventListener('message', handler);
+    };
+
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(null); // no session event arrived in time
+    }, timeoutMs);
+
+    function handler(event) {
+      if (typeof event.origin !== 'string' || !event.origin.endsWith('facebook.com')) return;
+
+      let data;
+      try { data = JSON.parse(event.data); } catch { return; }
+      if (!data || data.type !== 'WA_EMBEDDED_SIGNUP') return;
+
+      if (settled) return;
+      settled = true;
+      cleanup();
+
+      if (data.event === 'CANCEL') {
+        resolve({ cancelled: true });
+        return;
+      }
+      if (typeof data.event === 'string' && data.event.startsWith('FINISH')) {
+        resolve({ wabaId: data.data?.waba_id || null, phoneNumberId: data.data?.phone_number_id || null });
+        return;
+      }
+      resolve(null);
+    }
+
+    window.addEventListener('message', handler);
+  });
+}
+
 // ─── Main page ────────────────────────────────────────────────────────────────
 export default function WhatsAppConnect() {
   // status: idle | connecting | pick_phone | connected | error
@@ -38,11 +86,9 @@ export default function WhatsAppConnect() {
   const [phonePicker,    setPhonePicker]    = useState(null);   // { key, phones[] }
   const [pickLoading,    setPickLoading]    = useState(false);
 
-  // ── On mount: parse redirect params or check existing token ──────────────
-  // Note: the backend never puts the WhatsApp access token in this URL — for
-  // the multi-phone case it hands us an opaque, short-lived `key` and we
-  // fetch the phone list ourselves via a protected endpoint. This keeps the
-  // token out of the URL bar, browser history, and server access logs.
+  // ── On mount: parse redirect params (fallback OAuth path only) or check
+  // existing connection. The Embedded Signup path (below) never navigates
+  // the page at all, so it never lands here.
   useEffect(() => {
     const p = new URLSearchParams(window.location.search);
     if (p.toString()) window.history.replaceState({}, '', window.location.pathname);
@@ -102,22 +148,56 @@ export default function WhatsAppConnect() {
   const connect = async () => {
     setStatus('connecting');
 
-    // Path A — Embedded Signup popup (best UX, zero technical knowledge needed)
+    // Path A — Embedded Signup popup (primary path)
     if (META_APP_ID && META_CONFIG_ID) {
       try {
         const FB = await loadFbSdk(META_APP_ID);
+        const sessionPromise = waitForEmbeddedSignupSession();
+
         FB.login(
-          (resp) => {
-            if (resp.authResponse) {
-              // Hand code to backend — same callback URL as the redirect flow
-              const code  = resp.authResponse.code || '';
-              const state = resp.authResponse.state || 'embedded';
-              window.location.href =
-                `${import.meta.env.VITE_API_URL || ''}/api/meta/oauth-callback` +
-                `?code=${encodeURIComponent(code)}&state=${encodeURIComponent(state)}`;
-            } else {
+          async (resp) => {
+            if (!resp.authResponse?.code) {
               setStatus('error');
               setErrorMsg('You closed the Facebook window before completing the connection. Please try again.');
+              return;
+            }
+            const code = resp.authResponse.code;
+
+            // Meta sends the WABA/phone IDs as a separate postMessage event —
+            // it may arrive slightly before or after this callback fires.
+            const session = await sessionPromise;
+
+            if (session?.cancelled) {
+              setStatus('error');
+              setErrorMsg('You cancelled the WhatsApp setup before it finished. No changes were made.');
+              return;
+            }
+            if (!session?.wabaId) {
+              setStatus('error');
+              setErrorMsg('Meta did not finish setting up your WhatsApp Business account. Please try again.');
+              return;
+            }
+
+            try {
+              const { data } = await api.post('/meta/embedded-signup-callback', {
+                code,
+                wabaId: session.wabaId,
+                phoneNumberId: session.phoneNumberId,
+              });
+
+              if (data.step === 'pick_phone') {
+                setPhonePicker({ key: data.key, phones: data.phones });
+                setStatus('pick_phone');
+              } else {
+                setStatus('connected');
+                setConnectedPhone(data.phone || '');
+              }
+            } catch (err) {
+              setStatus('error');
+              setErrorMsg(
+                err.response?.data?.message ||
+                'Could not complete the WhatsApp connection. Please try again.'
+              );
             }
           },
           {
@@ -150,12 +230,12 @@ export default function WhatsAppConnect() {
   const pickPhone = async (phone) => {
     setPickLoading(true);
     try {
-      await api.post('/meta/select-phone', {
+      const { data } = await api.post('/meta/select-phone', {
         key:           phonePicker.key,
         phoneNumberId: phone.phoneNumberId,
       });
       setStatus('connected');
-      setConnectedPhone(phone.displayNumber);
+      setConnectedPhone(data.phone || phone.displayNumber);
       setPhonePicker(null);
     } catch (err) {
       setStatus('error');
@@ -188,7 +268,7 @@ export default function WhatsAppConnect() {
         </div>
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Connect WhatsApp</h1>
-          <p className="text-sm text-gray-500">Link your business number in under 2 minutes</p>
+          <p className="text-sm text-gray-500">Link your business number in a few steps</p>
         </div>
       </div>
 
@@ -229,19 +309,19 @@ function IdleState({ onConnect, connecting }) {
           <div className="w-16 h-16 bg-white/20 rounded-2xl flex items-center justify-center mx-auto mb-3">
             <WAIcon size={32} />
           </div>
-          <h2 className="text-lg font-bold">One click to connect</h2>
+          <h2 className="text-lg font-bold">Connect your WhatsApp Business account</h2>
           <p className="text-sm text-green-100 mt-1">
-            Facebook guides you through every step — no technical knowledge needed
+            Meta will walk you through a short setup — no technical knowledge needed
           </p>
         </div>
 
         {/* Steps */}
         <div className="p-5 space-y-3">
           {[
-            ['A Facebook window opens',             'You\'ll log in or stay logged in — takes seconds'],
-            ['Select your WhatsApp Business number', 'Facebook shows your numbers — just pick one'],
-            ['Grant messaging permission',           'Tap "Allow" — we only get access to reply to messages'],
-            ['Done! AI replies start immediately',   'Customers message you, AI answers 24/7'],
+            ['A Meta window opens',                  'You\'ll log in to Meta, or stay logged in if you already are'],
+            ['Pick or create your WhatsApp Business number', 'Meta shows your options — pick one or set up a new number'],
+            ['Grant messaging permission',           'Approve the requested permissions — we only get access to reply to messages'],
+            ['Done! AI replies start automatically',  'Customers message you, AI answers 24/7'],
           ].map(([title, desc], i) => (
             <div key={i} className="flex gap-3 items-start">
               <div className="w-6 h-6 rounded-full bg-green-100 text-green-700 text-xs font-bold flex items-center justify-center flex-shrink-0 mt-0.5">
@@ -263,9 +343,9 @@ function IdleState({ onConnect, connecting }) {
             className="w-full flex items-center justify-center gap-3 px-6 py-4 bg-[#1877F2] hover:bg-[#166FE5] active:scale-[0.98] text-white rounded-2xl text-base font-bold transition-all shadow-lg shadow-blue-200 disabled:opacity-60"
           >
             {connecting ? (
-              <><RefreshCw size={20} className="animate-spin" /> Opening Facebook…</>
+              <><RefreshCw size={20} className="animate-spin" /> Opening Meta…</>
             ) : (
-              <><FBIcon /><span>Connect with Facebook</span></>
+              <><FBIcon /><span>Connect WhatsApp Business</span></>
             )}
           </button>
           <p className="text-center text-xs text-gray-400 mt-3">
@@ -278,7 +358,7 @@ function IdleState({ onConnect, connecting }) {
       <div className="grid grid-cols-3 gap-3">
         {[
           [Shield,        'Secure',       'Bank-level OAuth — we never see your Facebook password'],
-          [Zap,           'Instant',      'AI starts replying the moment you connect'],
+          [Zap,           'Fast setup',   'AI starts replying as soon as setup finishes'],
           [MessageCircle, '24/7 replies', 'Never miss a customer message again'],
         ].map(([Icon, label, desc]) => (
           <div key={label} className="bg-white rounded-xl border border-gray-100 p-3 text-center shadow-sm">
@@ -295,8 +375,8 @@ function IdleState({ onConnect, connecting }) {
           Don't have a WhatsApp Business account yet?
         </p>
         <p className="text-xs text-amber-800 leading-relaxed">
-          No problem — during the Facebook flow, you'll get the option to create one for free.
-          All you need is a phone number that can receive an SMS verification code.
+          No problem — during the Meta setup, you'll get the option to create one for free.
+          All you need is a phone number that can receive an SMS or voice verification code.
         </p>
       </div>
 
@@ -423,7 +503,3 @@ function FBIcon() {
     </svg>
   );
 }
-
-
-
-
