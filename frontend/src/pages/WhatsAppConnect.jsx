@@ -29,52 +29,118 @@ function loadFbSdk(appId) {
   });
 }
 
+// ─── Trusted origins for Embedded Signup's postMessage event ──────────────────
+// Meta's own sample code checks `event.origin.endsWith('facebook.com')`, but
+// that's an exact-suffix bug, not a domain check: 'https://evilfacebook.com'
+// also ends with 'facebook.com' and would pass it. We instead require an
+// exact match against the real origins Meta's Embedded Signup posts from.
+// If a legitimate session event is ever seen from a facebook.com subdomain
+// not in this list, add it here explicitly — never widen this back to a
+// suffix/substring check.
+const TRUSTED_SIGNUP_ORIGINS = new Set([
+  'https://www.facebook.com',
+  'https://web.facebook.com',
+  'https://m.facebook.com',
+]);
+
+function isTrustedSignupOrigin(origin) {
+  return typeof origin === 'string' && TRUSTED_SIGNUP_ORIGINS.has(origin);
+}
+
+// Validates that a parsed WA_EMBEDDED_SIGNUP message has the shape we expect
+// before any of its fields are trusted.
+function isValidSignupMessage(data) {
+  return (
+    !!data &&
+    typeof data === 'object' &&
+    data.type === 'WA_EMBEDDED_SIGNUP' &&
+    typeof data.event === 'string'
+  );
+}
+
 // ─── Embedded Signup session-info listener ────────────────────────────────────
 // FB.login()'s own callback only ever gives us resp.authResponse.code — it
 // never carries a `state` value (that's a /dialog/oauth-only concept) and it
 // never carries the WABA/phone IDs either. Meta instead posts those to the
 // window that launched the popup as a `WA_EMBEDDED_SIGNUP` message event.
 // See: https://developers.facebook.com/documentation/business-messaging/whatsapp/embedded-signup/implementation
-function waitForEmbeddedSignupSession(timeoutMs = 25000) {
-  return new Promise((resolve) => {
-    let settled = false;
+//
+// Lifecycle (this used to be a flat 25s timeout that could fail a customer
+// who was still legitimately inside the Meta popup — signup can involve
+// business verification steps that take longer than that):
+//   - The listener starts before FB.login() is called.
+//   - It resolves immediately once a valid FINISH/CANCEL message arrives.
+//   - FB.login()'s own callback fires when the popup closes. That's reported
+//     here via markPopupClosed(), which starts a short grace period for the
+//     (usually near-simultaneous) message event to arrive — rather than a
+//     timer that starts ticking the moment the popup opens and can expire
+//     while the customer is still legitimately completing signup.
+//   - An absolute safety-net timeout only guards against the listener never
+//     being told the popup closed at all (e.g. an SDK-level failure) so it
+//     can never leak indefinitely.
+function createEmbeddedSignupSession() {
+  let settled = false;
+  let resolveFn;
+  let graceTimer = null;
 
-    const cleanup = () => {
-      clearTimeout(timer);
-      window.removeEventListener('message', handler);
-    };
+  const promise = new Promise((resolve) => { resolveFn = resolve; });
 
-    const timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      resolve(null); // no session event arrived in time
-    }, timeoutMs);
+  function cleanup() {
+    window.removeEventListener('message', handler);
+    if (graceTimer) clearTimeout(graceTimer);
+    clearTimeout(safetyTimer);
+  }
 
-    function handler(event) {
-      if (typeof event.origin !== 'string' || !event.origin.endsWith('facebook.com')) return;
+  function settle(result) {
+    if (settled) return;
+    settled = true;
+    cleanup();
+    resolveFn(result);
+  }
 
-      let data;
-      try { data = JSON.parse(event.data); } catch { return; }
-      if (!data || data.type !== 'WA_EMBEDDED_SIGNUP') return;
+  function handler(event) {
+    if (!isTrustedSignupOrigin(event.origin)) return;
 
-      if (settled) return;
-      settled = true;
-      cleanup();
+    let data;
+    try { data = JSON.parse(event.data); } catch { return; }
+    if (!isValidSignupMessage(data)) return;
 
-      if (data.event === 'CANCEL') {
-        resolve({ cancelled: true });
-        return;
-      }
-      if (typeof data.event === 'string' && data.event.startsWith('FINISH')) {
-        resolve({ wabaId: data.data?.waba_id || null, phoneNumberId: data.data?.phone_number_id || null });
-        return;
-      }
-      resolve(null);
+    if (data.event === 'CANCEL') {
+      settle({ cancelled: true });
+      return;
     }
+    if (data.event.startsWith('FINISH')) {
+      settle({ wabaId: data.data?.waba_id || null, phoneNumberId: data.data?.phone_number_id || null });
+      return;
+    }
+    // ERROR or an event we don't recognize yet — not necessarily final,
+    // keep listening rather than guessing.
+  }
 
-    window.addEventListener('message', handler);
-  });
+  window.addEventListener('message', handler);
+
+  // Absolute safety net only — not the primary completion path. Guards
+  // against the listener leaking forever if markPopupClosed() is never
+  // called for some reason.
+  const safetyTimer = setTimeout(() => settle(null), 5 * 60 * 1000);
+
+  return {
+    promise,
+    // Call this from FB.login()'s own callback once the popup has closed.
+    markPopupClosed(hasCode) {
+      if (settled) return;
+      if (!hasCode) {
+        // Popup closed before authorizing — no session event is coming.
+        settle(null);
+        return;
+      }
+      // Popup closed with a code. The WA_EMBEDDED_SIGNUP message usually
+      // arrives right around now (slightly before or after) — give it a
+      // short grace window instead of failing immediately.
+      graceTimer = setTimeout(() => settle(null), 8000);
+    },
+    cancel: () => settle(null),
+  };
 }
 
 // ─── Main page ────────────────────────────────────────────────────────────────
@@ -107,7 +173,8 @@ export default function WhatsAppConnect() {
       return;
     }
     if (p.get('success') === 'true') {
-      setStatus('connected');
+      const connectionStatus = p.get('status');
+      setStatus(connectionStatus === 'activation_pending' ? 'activation_pending' : 'connected');
       setConnectedPhone(decodeURIComponent(p.get('phone') || ''));
       return;
     }
@@ -136,6 +203,9 @@ export default function WhatsAppConnect() {
       if (data.connected) {
         setStatus('connected');
         setConnectedPhone(data.phone || '');
+      } else if (data.connectionStatus === 'activation_pending') {
+        setStatus('activation_pending');
+        setConnectedPhone(data.phone || '');
       } else {
         setStatus('idle');
       }
@@ -152,11 +222,14 @@ export default function WhatsAppConnect() {
     if (META_APP_ID && META_CONFIG_ID) {
       try {
         const FB = await loadFbSdk(META_APP_ID);
-        const sessionPromise = waitForEmbeddedSignupSession();
+        const session = createEmbeddedSignupSession();
 
         FB.login(
           async (resp) => {
-            if (!resp.authResponse?.code) {
+            const hasCode = !!resp.authResponse?.code;
+            session.markPopupClosed(hasCode);
+
+            if (!hasCode) {
               setStatus('error');
               setErrorMsg('You closed the Facebook window before completing the connection. Please try again.');
               return;
@@ -165,14 +238,14 @@ export default function WhatsAppConnect() {
 
             // Meta sends the WABA/phone IDs as a separate postMessage event —
             // it may arrive slightly before or after this callback fires.
-            const session = await sessionPromise;
+            const sessionInfo = await session.promise;
 
-            if (session?.cancelled) {
+            if (sessionInfo?.cancelled) {
               setStatus('error');
               setErrorMsg('You cancelled the WhatsApp setup before it finished. No changes were made.');
               return;
             }
-            if (!session?.wabaId) {
+            if (!sessionInfo?.wabaId) {
               setStatus('error');
               setErrorMsg('Meta did not finish setting up your WhatsApp Business account. Please try again.');
               return;
@@ -181,15 +254,21 @@ export default function WhatsAppConnect() {
             try {
               const { data } = await api.post('/meta/embedded-signup-callback', {
                 code,
-                wabaId: session.wabaId,
-                phoneNumberId: session.phoneNumberId,
+                wabaId: sessionInfo.wabaId,
+                phoneNumberId: sessionInfo.phoneNumberId,
               });
 
               if (data.step === 'pick_phone') {
                 setPhonePicker({ key: data.key, phones: data.phones });
                 setStatus('pick_phone');
-              } else {
+              } else if (data.connected) {
                 setStatus('connected');
+                setConnectedPhone(data.phone || '');
+              } else {
+                // Saved, but Meta's activation steps (webhook subscription
+                // and/or phone registration) didn't both succeed yet — never
+                // show this as fully "Connected".
+                setStatus('activation_pending');
                 setConnectedPhone(data.phone || '');
               }
             } catch (err) {
@@ -234,7 +313,7 @@ export default function WhatsAppConnect() {
         key:           phonePicker.key,
         phoneNumberId: phone.phoneNumberId,
       });
-      setStatus('connected');
+      setStatus(data.connected ? 'connected' : 'activation_pending');
       setConnectedPhone(data.phone || phone.displayNumber);
       setPhonePicker(null);
     } catch (err) {
@@ -275,6 +354,11 @@ export default function WhatsAppConnect() {
       {/* ── CONNECTED ─────────────────────────────────────────────────────── */}
       {status === 'connected' && (
         <ConnectedState phone={connectedPhone} onDisconnect={disconnect} onRecheck={checkConnection} />
+      )}
+
+      {/* ── ACTIVATION PENDING ────────────────────────────────────────────── */}
+      {status === 'activation_pending' && (
+        <ActivationPendingState phone={connectedPhone} onDisconnect={disconnect} onRecheck={checkConnection} />
       )}
 
       {/* ── PHONE PICKER ──────────────────────────────────────────────────── */}
@@ -422,6 +506,54 @@ function ConnectedState({ phone, onDisconnect, onRecheck }) {
             🎉 <strong>You're all set!</strong> Send a test message to your WhatsApp number and the AI
             will reply automatically. Check the <strong>Conversations</strong> tab to watch messages
             come in live.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Activation pending state ───────────────────────────────────────────────
+// Shown when Meta confirmed the WABA/phone but the required activation steps
+// (webhook subscription and/or Cloud API phone registration) didn't both
+// succeed — never shown as "Connected" until they do.
+function ActivationPendingState({ phone, onDisconnect, onRecheck }) {
+  return (
+    <div className="space-y-4">
+      <div className="bg-white rounded-2xl border border-amber-200 shadow-sm p-6">
+        <div className="flex items-start justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <div className="w-11 h-11 bg-amber-100 rounded-xl flex items-center justify-center">
+              <RefreshCw size={22} className="text-amber-600" />
+            </div>
+            <div>
+              <p className="font-bold text-amber-900 text-lg">WhatsApp setup is still being completed</p>
+              {phone && <p className="text-sm text-amber-700 font-mono">{phone}</p>}
+              <p className="text-xs text-amber-600 mt-0.5">We saved your connection, but Meta hasn't finished activating it yet</p>
+            </div>
+          </div>
+          <div className="flex gap-2 flex-shrink-0">
+            <button
+              onClick={onRecheck}
+              title="Re-check connection"
+              className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+            >
+              <RefreshCw size={16} />
+            </button>
+            <button
+              onClick={onDisconnect}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 rounded-lg transition-colors font-medium"
+            >
+              <LogOut size={14} /> Disconnect
+            </button>
+          </div>
+        </div>
+
+        <div className="mt-5 p-4 bg-amber-50 rounded-xl">
+          <p className="text-sm text-amber-800 leading-relaxed">
+            This can take a few minutes, or may need a quick check in Meta Business Manager
+            (e.g. resetting the number's two-step verification PIN). Tap the refresh icon above to check again,
+            or contact support if this doesn't resolve on its own.
           </p>
         </div>
       </div>

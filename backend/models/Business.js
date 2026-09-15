@@ -29,6 +29,21 @@ const businessSchema = new mongoose.Schema({
     get: decrypt,
   },
   whatsappVerifyToken: { type: String },
+  // Source of truth for what the frontend should show. Set exclusively by
+  // finalizeConnection() in metaOAuthController.js — never inferred from
+  // the mere presence of whatsappPhoneNumberId/whatsappAccessToken, since
+  // those can be saved even when Meta's required post-signup activation
+  // steps (WABA webhook subscription, Cloud API phone registration) failed.
+  //   disconnected       — no WhatsApp connection on file
+  //   activation_pending — WABA/phone saved, but subscribe_apps and/or
+  //                        phone registration did not both succeed yet
+  //   connected          — WABA/phone saved AND both activation steps
+  //                        succeeded; messaging is actually usable
+  whatsappConnectionStatus: {
+    type: String,
+    enum: ['disconnected', 'activation_pending', 'connected'],
+    default: 'disconnected',
+  },
   // The two-step-verification PIN used to register whatsappPhoneNumberId
   // with Cloud API (POST /{phoneNumberId}/register). Kept (encrypted) so a
   // future re-registration doesn't require the customer to reset it.

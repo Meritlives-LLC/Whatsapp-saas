@@ -68,12 +68,18 @@ const publicPhone = ({ phoneNumberId, displayNumber, verifiedName, wabaId, wabaN
 //   1. Subscribe this app to the customer's WABA (required for webhooks).
 //   2. Register the phone number for Cloud API with a generated 2FA PIN
 //      (required — a freshly-signed-up number cannot send/receive until
-//      this succeeds).
+//      this succeeds). Per Meta's Embedded Signup docs, the integrating
+//      app — not Embedded Signup itself — is responsible for performing
+//      both of these steps server-to-server after the code exchange.
 // Then saves everything against the SaaS user's Business record.
 //
-// Neither (1) nor (2) failing blocks saving the connection — the token and
-// IDs are still valid and the customer is still the verified owner — but
-// failures are surfaced as warnings so they aren't silently swallowed.
+// IMPORTANT: neither (1) nor (2) failing blocks saving the WABA/phone IDs
+// and token — they're still valid and the customer is still the verified
+// owner, and saving them lets a retry reuse the same connection rather than
+// starting over. But this must NEVER be reported to the customer as a full
+// "connected" state: connectionStatus reflects the real, verifiable outcome
+// (see Business.js), and callers (embeddedSignupCallback / oauthCallback /
+// selectPhone) must relay that status rather than assuming success.
 async function finalizeConnection({ userId, wabaId, phoneNumberId, accessToken }) {
   const details = await metaGraph
     .getPhoneNumberDetails(phoneNumberId, accessToken)
@@ -87,6 +93,8 @@ async function finalizeConnection({ userId, wabaId, phoneNumberId, accessToken }
   const pin = crypto.randomInt(100000, 999999).toString();
   const registerResult = await metaGraph.registerPhoneNumber(phoneNumberId, accessToken, pin);
 
+  const fullyActivated = !!subscribeResult.subscribed && !!registerResult.registered;
+
   const update = {
     whatsappPhoneNumberId: phoneNumberId,
     whatsappBusinessAccountId: wabaId,
@@ -94,6 +102,7 @@ async function finalizeConnection({ userId, wabaId, phoneNumberId, accessToken }
     whatsappVerifyToken: process.env.WHATSAPP_VERIFY_TOKEN || 'wa_verify_token',
     whatsappDisplayNumber: details.displayNumber || '',
     whatsappVerifiedName: details.verifiedName || '',
+    whatsappConnectionStatus: fullyActivated ? 'connected' : 'activation_pending',
   };
   if (registerResult.registered) {
     update.whatsappRegistrationPin = pin;
@@ -113,7 +122,13 @@ async function finalizeConnection({ userId, wabaId, phoneNumberId, accessToken }
     );
   }
 
-  return { business, displayNumber: details.displayNumber, warnings };
+  return {
+    business,
+    displayNumber: details.displayNumber,
+    warnings,
+    connected: fullyActivated,
+    connectionStatus: fullyActivated ? 'connected' : 'activation_pending',
+  };
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -176,7 +191,7 @@ exports.embeddedSignupCallback = async (req, res) => {
       targetPhoneNumberId = phones[0].phoneNumberId;
     }
 
-    const { business, displayNumber, warnings } = await finalizeConnection({
+    const { business, displayNumber, warnings, connected, connectionStatus } = await finalizeConnection({
       userId: req.user._id,
       wabaId,
       phoneNumberId: targetPhoneNumberId,
@@ -187,8 +202,12 @@ exports.embeddedSignupCallback = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Business not found for this account.' });
     }
 
-    logger.info(`WhatsApp connected via Embedded Signup for user ${req.user._id}: waba=${wabaId} phone=${targetPhoneNumberId}`);
-    return res.json({ success: true, connected: true, phone: displayNumber || '', warnings });
+    logger.info(`WhatsApp ${connected ? 'connected' : 'saved (activation pending)'} via Embedded Signup for user ${req.user._id}: waba=${wabaId} phone=${targetPhoneNumberId}`);
+    // `success: true` only means the request itself completed without error —
+    // `connected` / `connectionStatus` carry the real, verified outcome. Never
+    // collapse these into a single "connected" flag the frontend can't tell
+    // apart from a genuine full connection.
+    return res.json({ success: true, connected, connectionStatus, phone: displayNumber || '', warnings });
   } catch (err) {
     const metaError = err.response?.data?.error?.message || err.message;
     logger.error(`Embedded Signup callback error for user ${req.user._id}: ${metaError}`);
@@ -285,11 +304,16 @@ exports.oauthCallback = async (req, res) => {
 
     if (phoneNumbers.length === 1) {
       const phone = phoneNumbers[0];
-      const { displayNumber } = await finalizeConnection({
+      const { displayNumber, connectionStatus } = await finalizeConnection({
         userId, wabaId: phone.wabaId, phoneNumberId: phone.phoneNumberId, accessToken: longLivedToken,
       });
-      logger.info(`WhatsApp auto-connected for user ${userId}: ${displayNumber || phone.displayNumber}`);
-      return res.redirect(`${FRONTEND_URL}/connect-whatsapp?success=true&phone=${encodeURIComponent(displayNumber || phone.displayNumber || '')}`);
+      logger.info(`WhatsApp ${connectionStatus} for user ${userId}: ${displayNumber || phone.displayNumber}`);
+      // `success=true` here means "no error occurred", not "fully connected" —
+      // status is carried separately so the frontend shows activation_pending
+      // rather than a false "Connected".
+      return res.redirect(
+        `${FRONTEND_URL}/connect-whatsapp?success=true&status=${connectionStatus}&phone=${encodeURIComponent(displayNumber || phone.displayNumber || '')}`
+      );
     }
 
     // Multiple phones — stash the token + options server-side and hand the
@@ -343,7 +367,7 @@ exports.selectPhone = async (req, res) => {
   }
 
   try {
-    const { business, displayNumber, warnings } = await finalizeConnection({
+    const { business, displayNumber, warnings, connected, connectionStatus } = await finalizeConnection({
       userId: req.user._id,
       wabaId: phone.wabaId,
       phoneNumberId,
@@ -354,10 +378,18 @@ exports.selectPhone = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Business not found' });
     }
 
-    consumePending(key); // one-time use — burn it once the connection succeeds
+    consumePending(key); // one-time use — burn it once the connection attempt is finalized
 
-    logger.info(`WhatsApp phone selected for user ${req.user._id}: ${phoneNumberId}`);
-    res.json({ success: true, message: 'WhatsApp connected successfully', phone: displayNumber || phone.displayNumber, warnings, business });
+    logger.info(`WhatsApp phone selected for user ${req.user._id}: ${phoneNumberId} (${connectionStatus})`);
+    res.json({
+      success: true,
+      connected,
+      connectionStatus,
+      message: connected ? 'WhatsApp connected successfully' : 'WhatsApp setup is still being completed.',
+      phone: displayNumber || phone.displayNumber,
+      warnings,
+      business,
+    });
   } catch (err) {
     const metaError = err.response?.data?.error?.message || err.message;
     logger.error(`selectPhone error: ${metaError}`);
@@ -379,6 +411,7 @@ exports.disconnect = async (req, res) => {
           whatsappVerifiedName: '',
           whatsappRegistrationPin: '',
         },
+        whatsappConnectionStatus: 'disconnected',
       }
     );
     logger.info(`WhatsApp disconnected for user ${req.user._id}`);
@@ -393,22 +426,31 @@ exports.tokenStatus = async (req, res) => {
   try {
     const business = await Business.findOne({ owner: req.user._id });
     if (!business?.whatsappAccessToken || !business?.whatsappPhoneNumberId) {
-      return res.json({ success: true, connected: false });
+      return res.json({ success: true, connected: false, connectionStatus: 'disconnected' });
     }
 
     const result = await axios.get(`${GRAPH_URL}/${business.whatsappPhoneNumberId}`, {
       headers: { Authorization: `Bearer ${business.whatsappAccessToken}` },
     }).catch((err) => ({ data: null, error: err.response?.data?.error }));
 
-    const connected = !!result.data?.id;
+    const tokenValid = !!result.data?.id;
+    // The stored status already reflects whether Meta's post-signup
+    // activation (webhook subscription + Cloud API registration) actually
+    // succeeded — a live token check alone can't tell us that, so we never
+    // report "connected" on the strength of the token check by itself.
+    const storedStatus = business.whatsappConnectionStatus || 'disconnected';
+    const connectionStatus = !tokenValid ? 'connection_failed' : storedStatus;
+    const connected = tokenValid && storedStatus === 'connected';
+
     res.json({
       success: true,
       connected,
+      connectionStatus,
       phoneNumberId: business.whatsappPhoneNumberId,
       wabaId: business.whatsappBusinessAccountId || '',
       phone: business.whatsappDisplayNumber || '',
     });
   } catch (err) {
-    res.json({ success: true, connected: false });
+    res.json({ success: true, connected: false, connectionStatus: 'disconnected' });
   }
 };

@@ -157,21 +157,27 @@ export default function Settings() {
 
           {tab === 'whatsapp' && (
             <div className="space-y-4">
-              <h3 className="font-semibold text-gray-900 mb-2">WhatsApp Cloud API</h3>
-              <p className="text-xs text-gray-400 bg-blue-50 p-3 rounded-lg mb-4">
-                Get these values from your <strong>Meta for Developers</strong> dashboard → WhatsApp → API Setup.
+              <h3 className="font-semibold text-gray-900 mb-2">WhatsApp Business</h3>
+              <p className="text-xs text-gray-500 bg-blue-50 p-3 rounded-lg mb-4">
+                WhatsApp is connected through Meta's guided setup — there's nothing to configure here manually.
+                {' '}
+                <a href="/connect-whatsapp" className="font-semibold text-blue-700 underline">
+                  Go to Connect WhatsApp
+                </a>{' '}
+                to connect, check your connection status, or reconnect.
               </p>
-              <Field label="Phone Number ID">
-                <input value={business.whatsappPhoneNumberId || ''} onChange={e => update('whatsappPhoneNumberId', e.target.value)} className={inputCls} placeholder="e.g. 123456789" />
-              </Field>
-              <Field label="Access Token">
-                <input value={business.whatsappAccessToken || ''} onChange={e => update('whatsappAccessToken', e.target.value)} className={inputCls} placeholder="EAAxxxxx..." />
-              </Field>
-              <Field label="Verify Token">
-                <input value={business.whatsappVerifyToken || ''} onChange={e => update('whatsappVerifyToken', e.target.value)} className={inputCls} placeholder="Your custom verify token" />
-              </Field>
+              {business.whatsappPhoneNumberId ? (
+                <div className="bg-gray-50 rounded-xl p-4 text-sm text-gray-600">
+                  <p className="font-semibold mb-1">Connected number</p>
+                  <p className="font-mono text-gray-800">{business.whatsappDisplayNumber || business.whatsappPhoneNumberId}</p>
+                </div>
+              ) : (
+                <div className="bg-amber-50 rounded-xl p-4 text-sm text-amber-800">
+                  No WhatsApp number connected yet.
+                </div>
+              )}
               <div className="bg-gray-50 rounded-xl p-4 text-sm text-gray-600">
-                <p className="font-semibold mb-1">Webhook URL to set in Meta:</p>
+                <p className="font-semibold mb-1">Webhook URL (for reference only — Meta configures this automatically):</p>
                 <code className="text-xs bg-white border border-gray-200 px-2 py-1 rounded break-all">
                   {(import.meta.env.VITE_API_URL || window.location.origin)}/api/webhook
                 </code>

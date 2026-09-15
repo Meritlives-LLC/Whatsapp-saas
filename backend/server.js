@@ -20,6 +20,20 @@ if (missing.length > 0) {
   console.error(`\n❌  Missing required environment variables:\n   ${missing.join('\n   ')}\n\nCopy backend/.env.example to backend/.env and fill in the values.\n`);
   process.exit(1);
 }
+
+// ─── Encryption key validation (fail-closed) ─────────────────
+// ENCRYPTION_KEY being *present* (checked above) isn't enough — it must
+// actually be usable for aes-256-gcm. Without this check, a malformed value
+// (wrong length, non-hex, copy-paste typo) would previously fall through to
+// utils/crypto.js silently storing WhatsApp access tokens as plaintext. We
+// now refuse to boot instead, so a bad key is caught at deploy time, not
+// discovered later by inspecting the database.
+const { validateEncryptionKey } = require('./utils/crypto');
+if (!validateEncryptionKey(process.env.ENCRYPTION_KEY)) {
+  console.error(`\n❌  ENCRYPTION_KEY is set but is not a valid 64-character hex string (32 bytes).\n\nGenerate one with:\n   node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"\n\nRefusing to start — sensitive fields (WhatsApp access tokens) must never be stored as plaintext.\n`);
+  process.exit(1);
+}
+
 if (process.env.NODE_ENV === 'production') {
   const PROD_EMAIL = ['EMAIL_HOST', 'EMAIL_USER', 'EMAIL_PASS'];
   const missingEmail = PROD_EMAIL.filter(k => !process.env[k]);

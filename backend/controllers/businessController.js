@@ -33,8 +33,17 @@ exports.updateBusiness = async (req, res) => {
     const ALLOWED = [
       'name', 'description', 'phone', 'email', 'website', 'industry',
       'aiKnowledge', 'settings',
-      'whatsappPhoneNumberId', 'whatsappVerifyToken',
     ];
+    // NOTE: whatsappPhoneNumberId / whatsappAccessToken / whatsappBusinessAccountId
+    // are deliberately NOT in this list. They must only ever be set by
+    // finalizeConnection() in metaOAuthController.js, after Meta has verified
+    // the customer actually owns that WABA/phone via Embedded Signup or OAuth.
+    // Allowing them here would let any authenticated customer overwrite their
+    // own business's whatsappPhoneNumberId with an arbitrary value — since
+    // that field isn't uniquely constrained, two Business documents could
+    // then collide on the same phone_number_id, and the webhook handler
+    // (which looks businesses up by whatsappPhoneNumberId) could route
+    // another customer's incoming WhatsApp messages here instead.
     const update = {};
     for (const key of ALLOWED) {
       if (req.body[key] !== undefined) update[key] = req.body[key];
