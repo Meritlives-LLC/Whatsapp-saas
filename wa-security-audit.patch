@@ -1,0 +1,1359 @@
+From eeb2ff0db1686eb142ff71f1ab0fdab469f0791f Mon Sep 17 00:00:00 2001
+From: Claude <claude@anthropic.com>
+Date: Tue, 15 Sep 2026 05:20:33 +0000
+Subject: [PATCH] Security audit: fail-closed encryption, real connection
+ status, close WA phone-ID hijack, harden postMessage + signup lifecycle
+
+- backend/utils/crypto.js, server.js: encrypt() now throws instead of
+  silently storing plaintext when ENCRYPTION_KEY is missing/invalid;
+  server refuses to boot on a malformed key instead of only checking
+  presence.
+- backend/models/Business.js, metaOAuthController.js: added
+  whatsappConnectionStatus (disconnected/activation_pending/connected)
+  so a customer is never shown Connected when Meta's required
+  post-signup activation (WABA webhook subscription, Cloud API phone
+  registration) didn't both succeed. Applied across embedded signup,
+  classic OAuth, phone-picker, token-status, and disconnect.
+- backend/controllers/businessController.js: removed
+  whatsappPhoneNumberId from the general PUT /api/business allowed
+  fields. It was previously customer-writable with no ownership
+  check and no unique constraint, letting an authenticated customer
+  overwrite it with another business's phone_number_id and collide
+  with the webhook handler's Business.findOne lookup - a real
+  cross-customer message-routing risk.
+- frontend/src/pages/Settings.jsx: removed manual WhatsApp Phone
+  Number ID / Access Token entry fields; replaced with a read-only
+  status view pointing to the guided Connect WhatsApp flow.
+- frontend/src/pages/WhatsAppConnect.jsx: replaced the
+  endsWith('facebook.com') postMessage origin check with an
+  exact-match allowlist plus message-shape validation; replaced the
+  fixed 25s Embedded Signup timeout with a listener tied to
+  FB.login's popup-close callback (short grace period + 5min safety
+  net); added an activation-pending UI state.
+- Added backend/tests/{crypto,metaOAuthController,businessController}.test.js
+  (51 -> 55 passing tests).
+---
+ backend/controllers/businessController.js  |  11 +-
+ backend/controllers/metaOAuthController.js |  78 ++++--
+ backend/models/Business.js                 |  15 ++
+ backend/server.js                          |  14 +
+ backend/tests/businessController.test.js   |  85 ++++++
+ backend/tests/crypto.test.js               | 194 ++++++++++++++
+ backend/tests/metaOAuthController.test.js  | 284 +++++++++++++++++++++
+ backend/utils/crypto.js                    |  71 ++++--
+ frontend/src/pages/Settings.jsx            |  32 ++-
+ frontend/src/pages/WhatsAppConnect.jsx     | 220 ++++++++++++----
+ 10 files changed, 910 insertions(+), 94 deletions(-)
+ create mode 100644 backend/tests/businessController.test.js
+ create mode 100644 backend/tests/crypto.test.js
+ create mode 100644 backend/tests/metaOAuthController.test.js
+
+diff --git a/backend/controllers/businessController.js b/backend/controllers/businessController.js
+index 00a2ad4..af21ce9 100644
+--- a/backend/controllers/businessController.js
++++ b/backend/controllers/businessController.js
+@@ -33,8 +33,17 @@ exports.updateBusiness = async (req, res) => {
+     const ALLOWED = [
+       'name', 'description', 'phone', 'email', 'website', 'industry',
+       'aiKnowledge', 'settings',
+-      'whatsappPhoneNumberId', 'whatsappVerifyToken',
+     ];
++    // NOTE: whatsappPhoneNumberId / whatsappAccessToken / whatsappBusinessAccountId
++    // are deliberately NOT in this list. They must only ever be set by
++    // finalizeConnection() in metaOAuthController.js, after Meta has verified
++    // the customer actually owns that WABA/phone via Embedded Signup or OAuth.
++    // Allowing them here would let any authenticated customer overwrite their
++    // own business's whatsappPhoneNumberId with an arbitrary value — since
++    // that field isn't uniquely constrained, two Business documents could
++    // then collide on the same phone_number_id, and the webhook handler
++    // (which looks businesses up by whatsappPhoneNumberId) could route
++    // another customer's incoming WhatsApp messages here instead.
+     const update = {};
+     for (const key of ALLOWED) {
+       if (req.body[key] !== undefined) update[key] = req.body[key];
+diff --git a/backend/controllers/metaOAuthController.js b/backend/controllers/metaOAuthController.js
+index 55447b0..32d8f14 100644
+--- a/backend/controllers/metaOAuthController.js
++++ b/backend/controllers/metaOAuthController.js
+@@ -68,12 +68,18 @@ const publicPhone = ({ phoneNumberId, displayNumber, verifiedName, wabaId, wabaN
+ //   1. Subscribe this app to the customer's WABA (required for webhooks).
+ //   2. Register the phone number for Cloud API with a generated 2FA PIN
+ //      (required — a freshly-signed-up number cannot send/receive until
+-//      this succeeds).
++//      this succeeds). Per Meta's Embedded Signup docs, the integrating
++//      app — not Embedded Signup itself — is responsible for performing
++//      both of these steps server-to-server after the code exchange.
+ // Then saves everything against the SaaS user's Business record.
+ //
+-// Neither (1) nor (2) failing blocks saving the connection — the token and
+-// IDs are still valid and the customer is still the verified owner — but
+-// failures are surfaced as warnings so they aren't silently swallowed.
++// IMPORTANT: neither (1) nor (2) failing blocks saving the WABA/phone IDs
++// and token — they're still valid and the customer is still the verified
++// owner, and saving them lets a retry reuse the same connection rather than
++// starting over. But this must NEVER be reported to the customer as a full
++// "connected" state: connectionStatus reflects the real, verifiable outcome
++// (see Business.js), and callers (embeddedSignupCallback / oauthCallback /
++// selectPhone) must relay that status rather than assuming success.
+ async function finalizeConnection({ userId, wabaId, phoneNumberId, accessToken }) {
+   const details = await metaGraph
+     .getPhoneNumberDetails(phoneNumberId, accessToken)
+@@ -87,6 +93,8 @@ async function finalizeConnection({ userId, wabaId, phoneNumberId, accessToken }
+   const pin = crypto.randomInt(100000, 999999).toString();
+   const registerResult = await metaGraph.registerPhoneNumber(phoneNumberId, accessToken, pin);
+ 
++  const fullyActivated = !!subscribeResult.subscribed && !!registerResult.registered;
++
+   const update = {
+     whatsappPhoneNumberId: phoneNumberId,
+     whatsappBusinessAccountId: wabaId,
+@@ -94,6 +102,7 @@ async function finalizeConnection({ userId, wabaId, phoneNumberId, accessToken }
+     whatsappVerifyToken: process.env.WHATSAPP_VERIFY_TOKEN || 'wa_verify_token',
+     whatsappDisplayNumber: details.displayNumber || '',
+     whatsappVerifiedName: details.verifiedName || '',
++    whatsappConnectionStatus: fullyActivated ? 'connected' : 'activation_pending',
+   };
+   if (registerResult.registered) {
+     update.whatsappRegistrationPin = pin;
+@@ -113,7 +122,13 @@ async function finalizeConnection({ userId, wabaId, phoneNumberId, accessToken }
+     );
+   }
+ 
+-  return { business, displayNumber: details.displayNumber, warnings };
++  return {
++    business,
++    displayNumber: details.displayNumber,
++    warnings,
++    connected: fullyActivated,
++    connectionStatus: fullyActivated ? 'connected' : 'activation_pending',
++  };
+ }
+ 
+ // ══════════════════════════════════════════════════════════════════════════
+@@ -176,7 +191,7 @@ exports.embeddedSignupCallback = async (req, res) => {
+       targetPhoneNumberId = phones[0].phoneNumberId;
+     }
+ 
+-    const { business, displayNumber, warnings } = await finalizeConnection({
++    const { business, displayNumber, warnings, connected, connectionStatus } = await finalizeConnection({
+       userId: req.user._id,
+       wabaId,
+       phoneNumberId: targetPhoneNumberId,
+@@ -187,8 +202,12 @@ exports.embeddedSignupCallback = async (req, res) => {
+       return res.status(404).json({ success: false, message: 'Business not found for this account.' });
+     }
+ 
+-    logger.info(`WhatsApp connected via Embedded Signup for user ${req.user._id}: waba=${wabaId} phone=${targetPhoneNumberId}`);
+-    return res.json({ success: true, connected: true, phone: displayNumber || '', warnings });
++    logger.info(`WhatsApp ${connected ? 'connected' : 'saved (activation pending)'} via Embedded Signup for user ${req.user._id}: waba=${wabaId} phone=${targetPhoneNumberId}`);
++    // `success: true` only means the request itself completed without error —
++    // `connected` / `connectionStatus` carry the real, verified outcome. Never
++    // collapse these into a single "connected" flag the frontend can't tell
++    // apart from a genuine full connection.
++    return res.json({ success: true, connected, connectionStatus, phone: displayNumber || '', warnings });
+   } catch (err) {
+     const metaError = err.response?.data?.error?.message || err.message;
+     logger.error(`Embedded Signup callback error for user ${req.user._id}: ${metaError}`);
+@@ -285,11 +304,16 @@ exports.oauthCallback = async (req, res) => {
+ 
+     if (phoneNumbers.length === 1) {
+       const phone = phoneNumbers[0];
+-      const { displayNumber } = await finalizeConnection({
++      const { displayNumber, connectionStatus } = await finalizeConnection({
+         userId, wabaId: phone.wabaId, phoneNumberId: phone.phoneNumberId, accessToken: longLivedToken,
+       });
+-      logger.info(`WhatsApp auto-connected for user ${userId}: ${displayNumber || phone.displayNumber}`);
+-      return res.redirect(`${FRONTEND_URL}/connect-whatsapp?success=true&phone=${encodeURIComponent(displayNumber || phone.displayNumber || '')}`);
++      logger.info(`WhatsApp ${connectionStatus} for user ${userId}: ${displayNumber || phone.displayNumber}`);
++      // `success=true` here means "no error occurred", not "fully connected" —
++      // status is carried separately so the frontend shows activation_pending
++      // rather than a false "Connected".
++      return res.redirect(
++        `${FRONTEND_URL}/connect-whatsapp?success=true&status=${connectionStatus}&phone=${encodeURIComponent(displayNumber || phone.displayNumber || '')}`
++      );
+     }
+ 
+     // Multiple phones — stash the token + options server-side and hand the
+@@ -343,7 +367,7 @@ exports.selectPhone = async (req, res) => {
+   }
+ 
+   try {
+-    const { business, displayNumber, warnings } = await finalizeConnection({
++    const { business, displayNumber, warnings, connected, connectionStatus } = await finalizeConnection({
+       userId: req.user._id,
+       wabaId: phone.wabaId,
+       phoneNumberId,
+@@ -354,10 +378,18 @@ exports.selectPhone = async (req, res) => {
+       return res.status(404).json({ success: false, message: 'Business not found' });
+     }
+ 
+-    consumePending(key); // one-time use — burn it once the connection succeeds
++    consumePending(key); // one-time use — burn it once the connection attempt is finalized
+ 
+-    logger.info(`WhatsApp phone selected for user ${req.user._id}: ${phoneNumberId}`);
+-    res.json({ success: true, message: 'WhatsApp connected successfully', phone: displayNumber || phone.displayNumber, warnings, business });
++    logger.info(`WhatsApp phone selected for user ${req.user._id}: ${phoneNumberId} (${connectionStatus})`);
++    res.json({
++      success: true,
++      connected,
++      connectionStatus,
++      message: connected ? 'WhatsApp connected successfully' : 'WhatsApp setup is still being completed.',
++      phone: displayNumber || phone.displayNumber,
++      warnings,
++      business,
++    });
+   } catch (err) {
+     const metaError = err.response?.data?.error?.message || err.message;
+     logger.error(`selectPhone error: ${metaError}`);
+@@ -379,6 +411,7 @@ exports.disconnect = async (req, res) => {
+           whatsappVerifiedName: '',
+           whatsappRegistrationPin: '',
+         },
++        whatsappConnectionStatus: 'disconnected',
+       }
+     );
+     logger.info(`WhatsApp disconnected for user ${req.user._id}`);
+@@ -393,22 +426,31 @@ exports.tokenStatus = async (req, res) => {
+   try {
+     const business = await Business.findOne({ owner: req.user._id });
+     if (!business?.whatsappAccessToken || !business?.whatsappPhoneNumberId) {
+-      return res.json({ success: true, connected: false });
++      return res.json({ success: true, connected: false, connectionStatus: 'disconnected' });
+     }
+ 
+     const result = await axios.get(`${GRAPH_URL}/${business.whatsappPhoneNumberId}`, {
+       headers: { Authorization: `Bearer ${business.whatsappAccessToken}` },
+     }).catch((err) => ({ data: null, error: err.response?.data?.error }));
+ 
+-    const connected = !!result.data?.id;
++    const tokenValid = !!result.data?.id;
++    // The stored status already reflects whether Meta's post-signup
++    // activation (webhook subscription + Cloud API registration) actually
++    // succeeded — a live token check alone can't tell us that, so we never
++    // report "connected" on the strength of the token check by itself.
++    const storedStatus = business.whatsappConnectionStatus || 'disconnected';
++    const connectionStatus = !tokenValid ? 'connection_failed' : storedStatus;
++    const connected = tokenValid && storedStatus === 'connected';
++
+     res.json({
+       success: true,
+       connected,
++      connectionStatus,
+       phoneNumberId: business.whatsappPhoneNumberId,
+       wabaId: business.whatsappBusinessAccountId || '',
+       phone: business.whatsappDisplayNumber || '',
+     });
+   } catch (err) {
+-    res.json({ success: true, connected: false });
++    res.json({ success: true, connected: false, connectionStatus: 'disconnected' });
+   }
+ };
+diff --git a/backend/models/Business.js b/backend/models/Business.js
+index 516c738..48aca1b 100644
+--- a/backend/models/Business.js
++++ b/backend/models/Business.js
+@@ -29,6 +29,21 @@ const businessSchema = new mongoose.Schema({
+     get: decrypt,
+   },
+   whatsappVerifyToken: { type: String },
++  // Source of truth for what the frontend should show. Set exclusively by
++  // finalizeConnection() in metaOAuthController.js — never inferred from
++  // the mere presence of whatsappPhoneNumberId/whatsappAccessToken, since
++  // those can be saved even when Meta's required post-signup activation
++  // steps (WABA webhook subscription, Cloud API phone registration) failed.
++  //   disconnected       — no WhatsApp connection on file
++  //   activation_pending — WABA/phone saved, but subscribe_apps and/or
++  //                        phone registration did not both succeed yet
++  //   connected          — WABA/phone saved AND both activation steps
++  //                        succeeded; messaging is actually usable
++  whatsappConnectionStatus: {
++    type: String,
++    enum: ['disconnected', 'activation_pending', 'connected'],
++    default: 'disconnected',
++  },
+   // The two-step-verification PIN used to register whatsappPhoneNumberId
+   // with Cloud API (POST /{phoneNumberId}/register). Kept (encrypted) so a
+   // future re-registration doesn't require the customer to reset it.
+diff --git a/backend/server.js b/backend/server.js
+index 57aee4b..bd53850 100644
+--- a/backend/server.js
++++ b/backend/server.js
+@@ -20,6 +20,20 @@ if (missing.length > 0) {
+   console.error(`\n❌  Missing required environment variables:\n   ${missing.join('\n   ')}\n\nCopy backend/.env.example to backend/.env and fill in the values.\n`);
+   process.exit(1);
+ }
++
++// ─── Encryption key validation (fail-closed) ─────────────────
++// ENCRYPTION_KEY being *present* (checked above) isn't enough — it must
++// actually be usable for aes-256-gcm. Without this check, a malformed value
++// (wrong length, non-hex, copy-paste typo) would previously fall through to
++// utils/crypto.js silently storing WhatsApp access tokens as plaintext. We
++// now refuse to boot instead, so a bad key is caught at deploy time, not
++// discovered later by inspecting the database.
++const { validateEncryptionKey } = require('./utils/crypto');
++if (!validateEncryptionKey(process.env.ENCRYPTION_KEY)) {
++  console.error(`\n❌  ENCRYPTION_KEY is set but is not a valid 64-character hex string (32 bytes).\n\nGenerate one with:\n   node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"\n\nRefusing to start — sensitive fields (WhatsApp access tokens) must never be stored as plaintext.\n`);
++  process.exit(1);
++}
++
+ if (process.env.NODE_ENV === 'production') {
+   const PROD_EMAIL = ['EMAIL_HOST', 'EMAIL_USER', 'EMAIL_PASS'];
+   const missingEmail = PROD_EMAIL.filter(k => !process.env[k]);
+diff --git a/backend/tests/businessController.test.js b/backend/tests/businessController.test.js
+new file mode 100644
+index 0000000..f37712e
+--- /dev/null
++++ b/backend/tests/businessController.test.js
+@@ -0,0 +1,85 @@
++// backend/tests/businessController.test.js
++//
++// Regression test for a vulnerability found during this audit: the general
++// PUT /api/business endpoint (updateBusiness) allowed whatsappPhoneNumberId
++// to be set directly by the authenticated customer, bypassing Meta's
++// Embedded Signup / OAuth ownership verification entirely. Since that field
++// has no unique constraint, two Business documents could collide on the
++// same phone_number_id, letting the webhook handler's
++// Business.findOne({ whatsappPhoneNumberId }) lookup route one customer's
++// incoming WhatsApp messages to a different customer.
++//
++// whatsappPhoneNumberId / whatsappAccessToken / whatsappBusinessAccountId
++// must only ever be written by finalizeConnection() in
++// metaOAuthController.js, never through this endpoint.
++
++jest.mock('../models/Business');
++jest.mock('../config/logger', () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn() }));
++
++const Business = require('../models/Business');
++const { updateBusiness } = require('../controllers/businessController');
++
++function mockRes() {
++  return {
++    statusCode: 200,
++    body: null,
++    status(code) { this.statusCode = code; return this; },
++    json(payload) { this.body = payload; return this; },
++  };
++}
++
++beforeEach(() => {
++  jest.clearAllMocks();
++  Business.findByIdAndUpdate.mockResolvedValue({ _id: 'biz-1' });
++});
++
++describe('updateBusiness — WhatsApp connection fields are not customer-writable', () => {
++  test('whatsappPhoneNumberId in the request body is silently dropped, not saved', async () => {
++    const req = {
++      user: { business: { _id: 'biz-1' } },
++      body: { name: 'Acme Co', whatsappPhoneNumberId: 'someone-elses-phone-id' },
++    };
++    await updateBusiness(req, mockRes());
++
++    const [, updateArg] = Business.findByIdAndUpdate.mock.calls[0];
++    expect(updateArg.$set.name).toBe('Acme Co');
++    expect(updateArg.$set.whatsappPhoneNumberId).toBeUndefined();
++  });
++
++  test('whatsappAccessToken in the request body is silently dropped, not saved', async () => {
++    const req = {
++      user: { business: { _id: 'biz-1' } },
++      body: { whatsappAccessToken: 'attacker-supplied-token' },
++    };
++    await updateBusiness(req, mockRes());
++
++    const [, updateArg] = Business.findByIdAndUpdate.mock.calls[0];
++    expect(updateArg.$set.whatsappAccessToken).toBeUndefined();
++  });
++
++  test('whatsappBusinessAccountId in the request body is silently dropped, not saved', async () => {
++    const req = {
++      user: { business: { _id: 'biz-1' } },
++      body: { whatsappBusinessAccountId: 'someone-elses-waba-id' },
++    };
++    await updateBusiness(req, mockRes());
++
++    const [, updateArg] = Business.findByIdAndUpdate.mock.calls[0];
++    expect(updateArg.$set.whatsappBusinessAccountId).toBeUndefined();
++  });
++
++  test('legitimate, non-Meta fields still save normally', async () => {
++    const req = {
++      user: { business: { _id: 'biz-1' } },
++      body: { name: 'Acme Co', description: 'We sell widgets', settings: { autoReply: false } },
++    };
++    await updateBusiness(req, mockRes());
++
++    const [, updateArg] = Business.findByIdAndUpdate.mock.calls[0];
++    expect(updateArg.$set).toEqual({
++      name: 'Acme Co',
++      description: 'We sell widgets',
++      settings: { autoReply: false },
++    });
++  });
++});
+diff --git a/backend/tests/crypto.test.js b/backend/tests/crypto.test.js
+new file mode 100644
+index 0000000..f5d149f
+--- /dev/null
++++ b/backend/tests/crypto.test.js
+@@ -0,0 +1,194 @@
++// backend/tests/crypto.test.js
++//
++// Covers the fail-closed contract of utils/crypto.js: encrypt() must NEVER
++// silently fall back to storing plaintext when ENCRYPTION_KEY is missing or
++// malformed, and decrypt() must never turn corrupted/tampered ciphertext
++// into a false plaintext value.
++//
++// Each test resets the module registry and re-requires the module so the
++// module-load-time KEY validation (which reads process.env.ENCRYPTION_KEY
++// once, at require time) is re-evaluated per test case.
++
++const VALID_KEY = 'a'.repeat(64); // 32 bytes, valid hex
++const OLD_ENV = process.env;
++
++function freshCryptoModule(envOverrides) {
++  jest.resetModules();
++  process.env = { ...OLD_ENV, ...envOverrides };
++  return require('../utils/crypto');
++}
++
++afterAll(() => {
++  process.env = OLD_ENV;
++});
++
++describe('crypto utils — validateEncryptionKey', () => {
++  const { validateEncryptionKey } = freshCryptoModule({ ENCRYPTION_KEY: VALID_KEY });
++
++  test('accepts a valid 64-char hex string', () => {
++    expect(validateEncryptionKey(VALID_KEY)).not.toBeNull();
++    expect(validateEncryptionKey(VALID_KEY).length).toBe(32);
++  });
++
++  test('rejects missing/undefined/empty values', () => {
++    expect(validateEncryptionKey(undefined)).toBeNull();
++    expect(validateEncryptionKey('')).toBeNull();
++  });
++
++  test('rejects a key that is too short', () => {
++    expect(validateEncryptionKey('a'.repeat(32))).toBeNull();
++  });
++
++  test('rejects a key that is too long', () => {
++    expect(validateEncryptionKey('a'.repeat(128))).toBeNull();
++  });
++
++  test('rejects non-hex characters', () => {
++    expect(validateEncryptionKey('z'.repeat(64))).toBeNull();
++  });
++});
++
++describe('crypto utils — valid key configured', () => {
++  let crypto;
++  beforeEach(() => {
++    crypto = freshCryptoModule({ ENCRYPTION_KEY: VALID_KEY });
++  });
++
++  test('isEncryptionConfigured() is true', () => {
++    expect(crypto.isEncryptionConfigured()).toBe(true);
++  });
++
++  test('encrypt/decrypt round-trips a value', () => {
++    const plaintext = 'EAAG_super_secret_whatsapp_access_token';
++    const ciphertext = crypto.encrypt(plaintext);
++
++    expect(ciphertext).not.toBe(plaintext);
++    expect(ciphertext.startsWith('enc:')).toBe(true);
++    expect(crypto.decrypt(ciphertext)).toBe(plaintext);
++  });
++
++  test('encrypt() produces different ciphertext for the same plaintext each time (random IV)', () => {
++    const a = crypto.encrypt('same-value');
++    const b = crypto.encrypt('same-value');
++    expect(a).not.toBe(b);
++    expect(crypto.decrypt(a)).toBe('same-value');
++    expect(crypto.decrypt(b)).toBe('same-value');
++  });
++
++  test('encrypt() passes through null/undefined/empty string unchanged', () => {
++    expect(crypto.encrypt(null)).toBeNull();
++    expect(crypto.encrypt(undefined)).toBeUndefined();
++    expect(crypto.encrypt('')).toBe('');
++  });
++
++  test('encrypt() does not double-encrypt an already-encrypted value', () => {
++    const once = crypto.encrypt('token-123');
++    const twice = crypto.encrypt(once);
++    expect(twice).toBe(once);
++  });
++
++  test('decrypt() returns legacy plaintext (no "enc:" prefix) unchanged', () => {
++    expect(crypto.decrypt('plain-legacy-token')).toBe('plain-legacy-token');
++  });
++
++  test('decrypt() fails closed on corrupted ciphertext (truncated data)', () => {
++    const ciphertext = crypto.encrypt('a-token');
++    const corrupted = ciphertext.slice(0, -4); // chop off part of the encrypted payload
++    expect(crypto.decrypt(corrupted)).toBeNull();
++  });
++
++  test('decrypt() fails closed on tampered ciphertext (auth tag no longer matches)', () => {
++    const ciphertext = crypto.encrypt('a-token');
++    const [prefix, iv, tag, data] = ciphertext.split(':');
++    // Flip a hex character in the actual encrypted data segment.
++    const tamperedChar = data[0] === '0' ? '1' : '0';
++    const tamperedData = tamperedChar + data.slice(1);
++    const tampered = [prefix, iv, tag, tamperedData].join(':');
++
++    expect(crypto.decrypt(tampered)).toBeNull();
++  });
++
++  test('decrypt() fails closed on a tampered IV', () => {
++    const ciphertext = crypto.encrypt('a-token');
++    const [prefix, iv, tag, data] = ciphertext.split(':');
++    const tamperedIv = (iv[0] === '0' ? '1' : '0') + iv.slice(1);
++    const tampered = [prefix, tamperedIv, tag, data].join(':');
++
++    expect(crypto.decrypt(tampered)).toBeNull();
++  });
++
++  test('decrypt() fails closed on malformed ciphertext missing segments', () => {
++    expect(crypto.decrypt('enc:onlyoneseg')).toBeNull();
++  });
++});
++
++describe('crypto utils — ENCRYPTION_KEY missing (fail-closed, no plaintext fallback)', () => {
++  let crypto;
++  beforeEach(() => {
++    crypto = freshCryptoModule({ ENCRYPTION_KEY: undefined });
++    delete process.env.ENCRYPTION_KEY;
++    jest.resetModules();
++    crypto = require('../utils/crypto');
++  });
++
++  test('isEncryptionConfigured() is false', () => {
++    expect(crypto.isEncryptionConfigured()).toBe(false);
++  });
++
++  test('encrypt() throws instead of returning plaintext', () => {
++    expect(() => crypto.encrypt('super-secret-token')).toThrow(/ENCRYPTION_KEY/i);
++  });
++
++  test('encrypt() never returns the raw plaintext value on failure', () => {
++    let thrown = null;
++    try {
++      crypto.encrypt('super-secret-token');
++    } catch (err) {
++      thrown = err;
++    }
++    expect(thrown).not.toBeNull();
++    // Whatever we threw must not itself be the plaintext (i.e. we didn't
++    // "return" it through an exception path either).
++    expect(String(thrown)).not.toContain('super-secret-token');
++  });
++
++  test('decrypt() of a previously-encrypted value returns null, not garbage/plaintext', () => {
++    // Simulate a value that was encrypted earlier when a key WAS configured.
++    const withKey = freshCryptoModule({ ENCRYPTION_KEY: VALID_KEY });
++    const ciphertext = withKey.encrypt('a-token');
++
++    jest.resetModules();
++    delete process.env.ENCRYPTION_KEY;
++    const withoutKey = require('../utils/crypto');
++    expect(withoutKey.decrypt(ciphertext)).toBeNull();
++  });
++
++  test('decrypt() still returns legacy plaintext as-is (no key needed for pre-encryption rows)', () => {
++    expect(crypto.decrypt('legacy-plaintext-value')).toBe('legacy-plaintext-value');
++  });
++});
++
++describe('crypto utils — ENCRYPTION_KEY present but invalid (fail-closed, no plaintext fallback)', () => {
++  let crypto;
++  beforeEach(() => {
++    crypto = freshCryptoModule({ ENCRYPTION_KEY: 'not-a-valid-hex-key' });
++  });
++
++  test('isEncryptionConfigured() is false', () => {
++    expect(crypto.isEncryptionConfigured()).toBe(false);
++  });
++
++  test('encrypt() throws instead of returning plaintext', () => {
++    expect(() => crypto.encrypt('super-secret-token')).toThrow(/ENCRYPTION_KEY/i);
++  });
++
++  test('decrypt() of a valid ciphertext returns null (cannot decrypt with a bad key)', () => {
++    const withKey = freshCryptoModule({ ENCRYPTION_KEY: VALID_KEY });
++    const ciphertext = withKey.encrypt('a-token');
++
++    jest.resetModules();
++    process.env = { ...OLD_ENV, ENCRYPTION_KEY: 'not-a-valid-hex-key' };
++    const withBadKey = require('../utils/crypto');
++    expect(withBadKey.decrypt(ciphertext)).toBeNull();
++  });
++});
+diff --git a/backend/tests/metaOAuthController.test.js b/backend/tests/metaOAuthController.test.js
+new file mode 100644
+index 0000000..baa23b9
+--- /dev/null
++++ b/backend/tests/metaOAuthController.test.js
+@@ -0,0 +1,284 @@
++// backend/tests/metaOAuthController.test.js
++//
++// Unit tests (no DB) for the parts of metaOAuthController.js that were
++// changed in this audit:
++//   - finalizeConnection() must never report a full "connected" state when
++//     Meta's required activation steps (subscribe_apps / phone register)
++//     didn't both succeed (Phase 8: false "Connected" state).
++//   - Ownership checks: req.user determines ownership; a pending connection
++//     started by one user can never be read or consumed by another.
++//   - The access token is never present in any JSON response body.
++//
++// Business and the Meta Graph service are mocked; axios is mocked for the
++// tokenStatus live-check call.
++
++jest.mock('../models/Business');
++jest.mock('../services/metaGraphService');
++jest.mock('axios');
++jest.mock('../config/logger', () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn() }));
++
++const axios = require('axios');
++const Business = require('../models/Business');
++const metaGraph = require('../services/metaGraphService');
++
++process.env.META_APP_ID = 'test-app-id';
++process.env.META_APP_SECRET = 'test-app-secret';
++process.env.META_GRAPH_API_VERSION = 'v23.0';
++
++const controller = require('../controllers/metaOAuthController');
++
++function mockRes() {
++  return {
++    statusCode: 200,
++    body: null,
++    status(code) { this.statusCode = code; return this; },
++    json(payload) { this.body = payload; return this; },
++    redirect(url) { this.redirectUrl = url; return this; },
++  };
++}
++
++beforeEach(() => {
++  jest.clearAllMocks();
++});
++
++describe('finalizeConnection outcome via embeddedSignupCallback (Phase 8 — no false "connected")', () => {
++  const req = () => ({
++    user: { _id: 'user-1' },
++    body: { code: 'the-code', wabaId: 'waba-1', phoneNumberId: 'phone-1' },
++  });
++
++  beforeEach(() => {
++    metaGraph.exchangeEmbeddedCodeForToken.mockResolvedValue('short-token');
++    metaGraph.getLongLivedToken.mockResolvedValue('long-token');
++    metaGraph.getPhoneNumberDetails.mockResolvedValue({ displayNumber: '+1 555 0100', verifiedName: 'Acme' });
++  });
++
++  test('reports connected:true only when BOTH subscribe and register succeed', async () => {
++    metaGraph.subscribeAppToWaba.mockResolvedValue({ subscribed: true });
++    metaGraph.registerPhoneNumber.mockResolvedValue({ registered: true });
++    Business.findOneAndUpdate.mockResolvedValue({ _id: 'biz-1', whatsappConnectionStatus: 'connected' });
++
++    const res = mockRes();
++    await controller.embeddedSignupCallback(req(), res);
++
++    expect(res.body.success).toBe(true);
++    expect(res.body.connected).toBe(true);
++    expect(res.body.connectionStatus).toBe('connected');
++
++    const [, update] = Business.findOneAndUpdate.mock.calls[0];
++    expect(update.whatsappConnectionStatus).toBe('connected');
++  });
++
++  test('reports connected:false + activation_pending when subscribe fails', async () => {
++    metaGraph.subscribeAppToWaba.mockResolvedValue({ subscribed: false, error: 'Invalid token' });
++    metaGraph.registerPhoneNumber.mockResolvedValue({ registered: true });
++    Business.findOneAndUpdate.mockResolvedValue({ _id: 'biz-1', whatsappConnectionStatus: 'activation_pending' });
++
++    const res = mockRes();
++    await controller.embeddedSignupCallback(req(), res);
++
++    expect(res.body.success).toBe(true); // request succeeded...
++    expect(res.body.connected).toBe(false); // ...but the WhatsApp connection is NOT fully active
++    expect(res.body.connectionStatus).toBe('activation_pending');
++    expect(res.body.warnings.length).toBeGreaterThan(0);
++
++    const [, update] = Business.findOneAndUpdate.mock.calls[0];
++    expect(update.whatsappConnectionStatus).toBe('activation_pending');
++  });
++
++  test('reports connected:false + activation_pending when phone registration fails', async () => {
++    metaGraph.subscribeAppToWaba.mockResolvedValue({ subscribed: true });
++    metaGraph.registerPhoneNumber.mockResolvedValue({ registered: false, error: 'PIN mismatch', code: 133010 });
++    Business.findOneAndUpdate.mockResolvedValue({ _id: 'biz-1', whatsappConnectionStatus: 'activation_pending' });
++
++    const res = mockRes();
++    await controller.embeddedSignupCallback(req(), res);
++
++    expect(res.body.connected).toBe(false);
++    expect(res.body.connectionStatus).toBe('activation_pending');
++    expect(res.body.warnings.some((w) => /two-step verification/i.test(w))).toBe(true);
++  });
++
++  test('reports connected:false when BOTH subscribe and register fail', async () => {
++    metaGraph.subscribeAppToWaba.mockResolvedValue({ subscribed: false, error: 'down' });
++    metaGraph.registerPhoneNumber.mockResolvedValue({ registered: false, error: 'down' });
++    Business.findOneAndUpdate.mockResolvedValue({ _id: 'biz-1', whatsappConnectionStatus: 'activation_pending' });
++
++    const res = mockRes();
++    await controller.embeddedSignupCallback(req(), res);
++
++    expect(res.body.connected).toBe(false);
++    expect(res.body.connectionStatus).toBe('activation_pending');
++    expect(res.body.warnings.length).toBe(2);
++  });
++
++  test('the access token is never present anywhere in the JSON response', async () => {
++    metaGraph.subscribeAppToWaba.mockResolvedValue({ subscribed: true });
++    metaGraph.registerPhoneNumber.mockResolvedValue({ registered: true });
++    Business.findOneAndUpdate.mockResolvedValue({ _id: 'biz-1', whatsappConnectionStatus: 'connected' });
++
++    const res = mockRes();
++    await controller.embeddedSignupCallback(req(), res);
++
++    expect(JSON.stringify(res.body)).not.toContain('long-token');
++    expect(JSON.stringify(res.body)).not.toContain('short-token');
++  });
++});
++
++describe('tokenStatus (Phase 8) — never reports connected on a stale/incomplete record', () => {
++  test('connected:false when no business record has a token/phone at all', async () => {
++    Business.findOne.mockResolvedValue({ whatsappAccessToken: null, whatsappPhoneNumberId: null });
++
++    const res = mockRes();
++    await controller.tokenStatus({ user: { _id: 'user-1' } }, res);
++
++    expect(res.body.connected).toBe(false);
++    expect(res.body.connectionStatus).toBe('disconnected');
++  });
++
++  test('connected:false + activation_pending when token is live but activation never completed', async () => {
++    Business.findOne.mockResolvedValue({
++      whatsappAccessToken: 'tok',
++      whatsappPhoneNumberId: 'phone-1',
++      whatsappConnectionStatus: 'activation_pending',
++      whatsappBusinessAccountId: 'waba-1',
++      whatsappDisplayNumber: '+1 555 0100',
++    });
++    axios.get.mockResolvedValue({ data: { id: 'phone-1' } });
++
++    const res = mockRes();
++    await controller.tokenStatus({ user: { _id: 'user-1' } }, res);
++
++    expect(res.body.connected).toBe(false);
++    expect(res.body.connectionStatus).toBe('activation_pending');
++  });
++
++  test('connected:true only when the token is live AND stored status is connected', async () => {
++    Business.findOne.mockResolvedValue({
++      whatsappAccessToken: 'tok',
++      whatsappPhoneNumberId: 'phone-1',
++      whatsappConnectionStatus: 'connected',
++      whatsappBusinessAccountId: 'waba-1',
++      whatsappDisplayNumber: '+1 555 0100',
++    });
++    axios.get.mockResolvedValue({ data: { id: 'phone-1' } });
++
++    const res = mockRes();
++    await controller.tokenStatus({ user: { _id: 'user-1' } }, res);
++
++    expect(res.body.connected).toBe(true);
++    expect(res.body.connectionStatus).toBe('connected');
++  });
++
++  test('reports connection_failed (not connected) when the live token check fails, even if stored status is "connected"', async () => {
++    Business.findOne.mockResolvedValue({
++      whatsappAccessToken: 'tok',
++      whatsappPhoneNumberId: 'phone-1',
++      whatsappConnectionStatus: 'connected',
++    });
++    axios.get.mockRejectedValue({ response: { data: { error: { message: 'Invalid token' } } } });
++
++    const res = mockRes();
++    await controller.tokenStatus({ user: { _id: 'user-1' } }, res);
++
++    expect(res.body.connected).toBe(false);
++    expect(res.body.connectionStatus).toBe('connection_failed');
++  });
++});
++
++describe('ownership — pending connection handoff cannot be read or used cross-user', () => {
++  test('selectPhone rejects a key when req.user does not match the user who started the connection', async () => {
++    metaGraph.exchangeEmbeddedCodeForToken.mockResolvedValue('short');
++    metaGraph.getLongLivedToken.mockResolvedValue('long');
++    metaGraph.getPhoneNumbersForWaba.mockResolvedValue([
++      { phoneNumberId: 'p1', displayNumber: '+1', verifiedName: 'A', wabaId: 'w1', wabaName: 'WABA A' },
++      { phoneNumberId: 'p2', displayNumber: '+2', verifiedName: 'B', wabaId: 'w1', wabaName: 'WABA A' },
++    ]);
++
++    const startRes = mockRes();
++    await controller.embeddedSignupCallback(
++      { user: { _id: 'owner-user' }, body: { code: 'c', wabaId: 'w1' } },
++      startRes
++    );
++
++    expect(startRes.body.step).toBe('pick_phone');
++    const { key } = startRes.body;
++    expect(key).toBeTruthy();
++
++    // A different, authenticated user tries to use the same key.
++    const attackerRes = mockRes();
++    await controller.selectPhone(
++      { user: { _id: 'attacker-user' }, body: { key, phoneNumberId: 'p1' } },
++      attackerRes
++    );
++
++    expect(attackerRes.statusCode).toBe(400);
++    expect(attackerRes.body.success).toBe(false);
++    expect(Business.findOneAndUpdate).not.toHaveBeenCalled();
++  });
++
++  test('getPendingConnection rejects a key when req.user does not match the user who started the connection', async () => {
++    metaGraph.exchangeEmbeddedCodeForToken.mockResolvedValue('short');
++    metaGraph.getLongLivedToken.mockResolvedValue('long');
++    metaGraph.getPhoneNumbersForWaba.mockResolvedValue([
++      { phoneNumberId: 'p1', displayNumber: '+1', verifiedName: 'A', wabaId: 'w1', wabaName: 'WABA A' },
++      { phoneNumberId: 'p2', displayNumber: '+2', verifiedName: 'B', wabaId: 'w1', wabaName: 'WABA A' },
++    ]);
++
++    const startRes = mockRes();
++    await controller.embeddedSignupCallback(
++      { user: { _id: 'owner-user' }, body: { code: 'c', wabaId: 'w1' } },
++      startRes
++    );
++    const { key } = startRes.body;
++
++    const attackerRes = mockRes();
++    controller.getPendingConnection({ user: { _id: 'attacker-user' }, query: { key } }, attackerRes);
++
++    expect(attackerRes.statusCode).toBe(404);
++    expect(attackerRes.body.success).toBe(false);
++  });
++
++  test('the rightful owner CAN use the key to complete their own connection', async () => {
++    metaGraph.exchangeEmbeddedCodeForToken.mockResolvedValue('short');
++    metaGraph.getLongLivedToken.mockResolvedValue('long');
++    metaGraph.getPhoneNumbersForWaba.mockResolvedValue([
++      { phoneNumberId: 'p1', displayNumber: '+1', verifiedName: 'A', wabaId: 'w1', wabaName: 'WABA A' },
++      { phoneNumberId: 'p2', displayNumber: '+2', verifiedName: 'B', wabaId: 'w1', wabaName: 'WABA A' },
++    ]);
++    metaGraph.getPhoneNumberDetails.mockResolvedValue({ displayNumber: '+1', verifiedName: 'A' });
++    metaGraph.subscribeAppToWaba.mockResolvedValue({ subscribed: true });
++    metaGraph.registerPhoneNumber.mockResolvedValue({ registered: true });
++    Business.findOneAndUpdate.mockResolvedValue({ _id: 'biz-1', whatsappConnectionStatus: 'connected' });
++
++    const startRes = mockRes();
++    await controller.embeddedSignupCallback(
++      { user: { _id: 'owner-user' }, body: { code: 'c', wabaId: 'w1' } },
++      startRes
++    );
++    const { key } = startRes.body;
++
++    const ownerRes = mockRes();
++    await controller.selectPhone(
++      { user: { _id: 'owner-user' }, body: { key, phoneNumberId: 'p1' } },
++      ownerRes
++    );
++
++    expect(ownerRes.body.success).toBe(true);
++    expect(ownerRes.body.connected).toBe(true);
++  });
++});
++
++describe('disconnect resets connection status', () => {
++  test('sets whatsappConnectionStatus to disconnected alongside unsetting credentials', async () => {
++    Business.findOneAndUpdate.mockResolvedValue({ _id: 'biz-1' });
++    const res = mockRes();
++
++    await controller.disconnect({ user: { _id: 'user-1' } }, res);
++
++    expect(res.body.success).toBe(true);
++    const [, update] = Business.findOneAndUpdate.mock.calls[0];
++    expect(update.whatsappConnectionStatus).toBe('disconnected');
++    expect(update.$unset.whatsappAccessToken).toBeDefined();
++  });
++});
+diff --git a/backend/utils/crypto.js b/backend/utils/crypto.js
+index c8ae1fe..5c108e5 100644
+--- a/backend/utils/crypto.js
++++ b/backend/utils/crypto.js
+@@ -11,28 +11,50 @@ const logger = require('../config/logger');
+ 
+ const ALGO = 'aes-256-gcm';
+ 
+-let KEY = null;
+-if (process.env.ENCRYPTION_KEY) {
+-  const buf = Buffer.from(process.env.ENCRYPTION_KEY, 'hex');
+-  if (buf.length === 32) {
+-    KEY = buf;
+-  } else {
+-    logger.error('ENCRYPTION_KEY must be a 64-character hex string (32 bytes). Encryption disabled.');
+-  }
++/**
++ * Validate a candidate ENCRYPTION_KEY value.
++ * Must be a 64-character hex string (32 bytes) for aes-256-gcm.
++ * Returns the decoded Buffer on success, or null if invalid/missing.
++ * Never logs the key itself.
++ */
++function validateEncryptionKey(rawKey) {
++  if (!rawKey || typeof rawKey !== 'string') return null;
++  if (!/^[0-9a-fA-F]{64}$/.test(rawKey)) return null;
++  const buf = Buffer.from(rawKey, 'hex');
++  return buf.length === 32 ? buf : null;
++}
++
++// Resolved once at module load. Deliberately NOT lazily re-read per-call —
++// this is what lets server.js validate the exact same value at startup
++// (see requireValidEncryptionKeyOrExit()) and guarantee the process either
++// boots with working encryption or doesn't boot at all.
++let KEY = validateEncryptionKey(process.env.ENCRYPTION_KEY);
++if (process.env.ENCRYPTION_KEY && !KEY) {
++  // Value is present but malformed. Do NOT fall back to plaintext storage —
++  // encrypt() below throws instead. This is intentionally also logged here
++  // (in addition to the server.js startup check) so any code path that
++  // requires this module directly, e.g. in tests, still surfaces the problem.
++  logger.error('ENCRYPTION_KEY is set but is not a valid 64-character hex string (32 bytes). Encryption is disabled until this is fixed — sensitive fields will fail to save rather than being stored as plaintext.');
+ }
+ 
+ /**
+- * Encrypt a plaintext string. Returns the original value unchanged if
+- * empty/nullish, or if no valid ENCRYPTION_KEY is configured (dev fallback —
+- * a warning is logged so this isn't silently insecure in production).
++ * Encrypt a plaintext string.
++ *
++ * FAIL-CLOSED: if no valid ENCRYPTION_KEY is configured, this throws rather
++ * than silently returning the plaintext. A WhatsApp access token (or other
++ * sensitive field) must never be written to MongoDB unencrypted just because
++ * the server was misconfigured — better to fail the save loudly than to
++ * leak a live credential into the database in cleartext.
+  */
+ function encrypt(text) {
+   if (text === undefined || text === null || text === '') return text;
+   if (typeof text !== 'string') text = String(text);
+   if (text.startsWith('enc:')) return text; // already encrypted, don't double-encrypt
++
+   if (!KEY) {
+-    logger.warn('ENCRYPTION_KEY not configured — storing sensitive field as plaintext');
+-    return text;
++    throw new Error(
++      'Cannot store sensitive field: ENCRYPTION_KEY is missing or invalid. Refusing to fall back to plaintext.'
++    );
+   }
+ 
+   const iv = crypto.randomBytes(12);
+@@ -47,18 +69,25 @@ function encrypt(text) {
+  * Decrypt a value produced by encrypt(). Values that don't carry the "enc:"
+  * prefix are assumed to be legacy plaintext (written before encryption was
+  * added) and are returned as-is, so existing rows keep working until they're
+- * next re-saved.
++ * next re-saved. This is a read-path compatibility allowance only — it does
++ * not affect the fail-closed behavior of encrypt() above, and it never
++ * causes a plaintext value to be written back out as plaintext.
++ *
++ * Corrupted or tampered ciphertext (wrong auth tag, truncated data, etc.)
++ * fails closed: returns null rather than throwing partial/garbage bytes or
++ * ever falling back to treating the ciphertext blob as if it were plaintext.
+  */
+ function decrypt(value) {
+   if (!value || typeof value !== 'string') return value;
+-  if (!value.startsWith('enc:')) return value; // legacy plaintext
++  if (!value.startsWith('enc:')) return value; // legacy plaintext, pre-dates encryption
+   if (!KEY) {
+-    logger.error('Cannot decrypt: ENCRYPTION_KEY not configured');
++    logger.error('Cannot decrypt sensitive field: ENCRYPTION_KEY is missing or invalid.');
+     return null;
+   }
+ 
+   try {
+     const [, ivHex, tagHex, dataHex] = value.split(':');
++    if (!ivHex || !tagHex || !dataHex) throw new Error('Malformed ciphertext');
+     const iv = Buffer.from(ivHex, 'hex');
+     const authTag = Buffer.from(tagHex, 'hex');
+     const data = Buffer.from(dataHex, 'hex');
+@@ -68,9 +97,15 @@ function decrypt(value) {
+     const decrypted = Buffer.concat([decipher.update(data), decipher.final()]);
+     return decrypted.toString('utf8');
+   } catch (err) {
+-    logger.error(`Decrypt failed: ${err.message}`);
++    // Never log the ciphertext or key material — only the generic reason.
++    logger.error(`Decrypt failed (corrupted or tampered ciphertext): ${err.message}`);
+     return null;
+   }
+ }
+ 
+-module.exports = { encrypt, decrypt };
++/** True if a valid ENCRYPTION_KEY is currently loaded. */
++function isEncryptionConfigured() {
++  return KEY !== null;
++}
++
++module.exports = { encrypt, decrypt, validateEncryptionKey, isEncryptionConfigured };
+diff --git a/frontend/src/pages/Settings.jsx b/frontend/src/pages/Settings.jsx
+index 8553a14..980439a 100644
+--- a/frontend/src/pages/Settings.jsx
++++ b/frontend/src/pages/Settings.jsx
+@@ -157,21 +157,27 @@ export default function Settings() {
+ 
+           {tab === 'whatsapp' && (
+             <div className="space-y-4">
+-              <h3 className="font-semibold text-gray-900 mb-2">WhatsApp Cloud API</h3>
+-              <p className="text-xs text-gray-400 bg-blue-50 p-3 rounded-lg mb-4">
+-                Get these values from your <strong>Meta for Developers</strong> dashboard → WhatsApp → API Setup.
++              <h3 className="font-semibold text-gray-900 mb-2">WhatsApp Business</h3>
++              <p className="text-xs text-gray-500 bg-blue-50 p-3 rounded-lg mb-4">
++                WhatsApp is connected through Meta's guided setup — there's nothing to configure here manually.
++                {' '}
++                <a href="/connect-whatsapp" className="font-semibold text-blue-700 underline">
++                  Go to Connect WhatsApp
++                </a>{' '}
++                to connect, check your connection status, or reconnect.
+               </p>
+-              <Field label="Phone Number ID">
+-                <input value={business.whatsappPhoneNumberId || ''} onChange={e => update('whatsappPhoneNumberId', e.target.value)} className={inputCls} placeholder="e.g. 123456789" />
+-              </Field>
+-              <Field label="Access Token">
+-                <input value={business.whatsappAccessToken || ''} onChange={e => update('whatsappAccessToken', e.target.value)} className={inputCls} placeholder="EAAxxxxx..." />
+-              </Field>
+-              <Field label="Verify Token">
+-                <input value={business.whatsappVerifyToken || ''} onChange={e => update('whatsappVerifyToken', e.target.value)} className={inputCls} placeholder="Your custom verify token" />
+-              </Field>
++              {business.whatsappPhoneNumberId ? (
++                <div className="bg-gray-50 rounded-xl p-4 text-sm text-gray-600">
++                  <p className="font-semibold mb-1">Connected number</p>
++                  <p className="font-mono text-gray-800">{business.whatsappDisplayNumber || business.whatsappPhoneNumberId}</p>
++                </div>
++              ) : (
++                <div className="bg-amber-50 rounded-xl p-4 text-sm text-amber-800">
++                  No WhatsApp number connected yet.
++                </div>
++              )}
+               <div className="bg-gray-50 rounded-xl p-4 text-sm text-gray-600">
+-                <p className="font-semibold mb-1">Webhook URL to set in Meta:</p>
++                <p className="font-semibold mb-1">Webhook URL (for reference only — Meta configures this automatically):</p>
+                 <code className="text-xs bg-white border border-gray-200 px-2 py-1 rounded break-all">
+                   {(import.meta.env.VITE_API_URL || window.location.origin)}/api/webhook
+                 </code>
+diff --git a/frontend/src/pages/WhatsAppConnect.jsx b/frontend/src/pages/WhatsAppConnect.jsx
+index 08e0da3..cdf225a 100644
+--- a/frontend/src/pages/WhatsAppConnect.jsx
++++ b/frontend/src/pages/WhatsAppConnect.jsx
+@@ -29,52 +29,118 @@ function loadFbSdk(appId) {
+   });
+ }
+ 
++// ─── Trusted origins for Embedded Signup's postMessage event ──────────────────
++// Meta's own sample code checks `event.origin.endsWith('facebook.com')`, but
++// that's an exact-suffix bug, not a domain check: 'https://evilfacebook.com'
++// also ends with 'facebook.com' and would pass it. We instead require an
++// exact match against the real origins Meta's Embedded Signup posts from.
++// If a legitimate session event is ever seen from a facebook.com subdomain
++// not in this list, add it here explicitly — never widen this back to a
++// suffix/substring check.
++const TRUSTED_SIGNUP_ORIGINS = new Set([
++  'https://www.facebook.com',
++  'https://web.facebook.com',
++  'https://m.facebook.com',
++]);
++
++function isTrustedSignupOrigin(origin) {
++  return typeof origin === 'string' && TRUSTED_SIGNUP_ORIGINS.has(origin);
++}
++
++// Validates that a parsed WA_EMBEDDED_SIGNUP message has the shape we expect
++// before any of its fields are trusted.
++function isValidSignupMessage(data) {
++  return (
++    !!data &&
++    typeof data === 'object' &&
++    data.type === 'WA_EMBEDDED_SIGNUP' &&
++    typeof data.event === 'string'
++  );
++}
++
+ // ─── Embedded Signup session-info listener ────────────────────────────────────
+ // FB.login()'s own callback only ever gives us resp.authResponse.code — it
+ // never carries a `state` value (that's a /dialog/oauth-only concept) and it
+ // never carries the WABA/phone IDs either. Meta instead posts those to the
+ // window that launched the popup as a `WA_EMBEDDED_SIGNUP` message event.
+ // See: https://developers.facebook.com/documentation/business-messaging/whatsapp/embedded-signup/implementation
+-function waitForEmbeddedSignupSession(timeoutMs = 25000) {
+-  return new Promise((resolve) => {
+-    let settled = false;
+-
+-    const cleanup = () => {
+-      clearTimeout(timer);
+-      window.removeEventListener('message', handler);
+-    };
+-
+-    const timer = setTimeout(() => {
+-      if (settled) return;
+-      settled = true;
+-      cleanup();
+-      resolve(null); // no session event arrived in time
+-    }, timeoutMs);
++//
++// Lifecycle (this used to be a flat 25s timeout that could fail a customer
++// who was still legitimately inside the Meta popup — signup can involve
++// business verification steps that take longer than that):
++//   - The listener starts before FB.login() is called.
++//   - It resolves immediately once a valid FINISH/CANCEL message arrives.
++//   - FB.login()'s own callback fires when the popup closes. That's reported
++//     here via markPopupClosed(), which starts a short grace period for the
++//     (usually near-simultaneous) message event to arrive — rather than a
++//     timer that starts ticking the moment the popup opens and can expire
++//     while the customer is still legitimately completing signup.
++//   - An absolute safety-net timeout only guards against the listener never
++//     being told the popup closed at all (e.g. an SDK-level failure) so it
++//     can never leak indefinitely.
++function createEmbeddedSignupSession() {
++  let settled = false;
++  let resolveFn;
++  let graceTimer = null;
++
++  const promise = new Promise((resolve) => { resolveFn = resolve; });
++
++  function cleanup() {
++    window.removeEventListener('message', handler);
++    if (graceTimer) clearTimeout(graceTimer);
++    clearTimeout(safetyTimer);
++  }
++
++  function settle(result) {
++    if (settled) return;
++    settled = true;
++    cleanup();
++    resolveFn(result);
++  }
++
++  function handler(event) {
++    if (!isTrustedSignupOrigin(event.origin)) return;
++
++    let data;
++    try { data = JSON.parse(event.data); } catch { return; }
++    if (!isValidSignupMessage(data)) return;
++
++    if (data.event === 'CANCEL') {
++      settle({ cancelled: true });
++      return;
++    }
++    if (data.event.startsWith('FINISH')) {
++      settle({ wabaId: data.data?.waba_id || null, phoneNumberId: data.data?.phone_number_id || null });
++      return;
++    }
++    // ERROR or an event we don't recognize yet — not necessarily final,
++    // keep listening rather than guessing.
++  }
+ 
+-    function handler(event) {
+-      if (typeof event.origin !== 'string' || !event.origin.endsWith('facebook.com')) return;
++  window.addEventListener('message', handler);
+ 
+-      let data;
+-      try { data = JSON.parse(event.data); } catch { return; }
+-      if (!data || data.type !== 'WA_EMBEDDED_SIGNUP') return;
++  // Absolute safety net only — not the primary completion path. Guards
++  // against the listener leaking forever if markPopupClosed() is never
++  // called for some reason.
++  const safetyTimer = setTimeout(() => settle(null), 5 * 60 * 1000);
+ 
++  return {
++    promise,
++    // Call this from FB.login()'s own callback once the popup has closed.
++    markPopupClosed(hasCode) {
+       if (settled) return;
+-      settled = true;
+-      cleanup();
+-
+-      if (data.event === 'CANCEL') {
+-        resolve({ cancelled: true });
++      if (!hasCode) {
++        // Popup closed before authorizing — no session event is coming.
++        settle(null);
+         return;
+       }
+-      if (typeof data.event === 'string' && data.event.startsWith('FINISH')) {
+-        resolve({ wabaId: data.data?.waba_id || null, phoneNumberId: data.data?.phone_number_id || null });
+-        return;
+-      }
+-      resolve(null);
+-    }
+-
+-    window.addEventListener('message', handler);
+-  });
++      // Popup closed with a code. The WA_EMBEDDED_SIGNUP message usually
++      // arrives right around now (slightly before or after) — give it a
++      // short grace window instead of failing immediately.
++      graceTimer = setTimeout(() => settle(null), 8000);
++    },
++    cancel: () => settle(null),
++  };
+ }
+ 
+ // ─── Main page ────────────────────────────────────────────────────────────────
+@@ -107,7 +173,8 @@ export default function WhatsAppConnect() {
+       return;
+     }
+     if (p.get('success') === 'true') {
+-      setStatus('connected');
++      const connectionStatus = p.get('status');
++      setStatus(connectionStatus === 'activation_pending' ? 'activation_pending' : 'connected');
+       setConnectedPhone(decodeURIComponent(p.get('phone') || ''));
+       return;
+     }
+@@ -136,6 +203,9 @@ export default function WhatsAppConnect() {
+       if (data.connected) {
+         setStatus('connected');
+         setConnectedPhone(data.phone || '');
++      } else if (data.connectionStatus === 'activation_pending') {
++        setStatus('activation_pending');
++        setConnectedPhone(data.phone || '');
+       } else {
+         setStatus('idle');
+       }
+@@ -152,11 +222,14 @@ export default function WhatsAppConnect() {
+     if (META_APP_ID && META_CONFIG_ID) {
+       try {
+         const FB = await loadFbSdk(META_APP_ID);
+-        const sessionPromise = waitForEmbeddedSignupSession();
++        const session = createEmbeddedSignupSession();
+ 
+         FB.login(
+           async (resp) => {
+-            if (!resp.authResponse?.code) {
++            const hasCode = !!resp.authResponse?.code;
++            session.markPopupClosed(hasCode);
++
++            if (!hasCode) {
+               setStatus('error');
+               setErrorMsg('You closed the Facebook window before completing the connection. Please try again.');
+               return;
+@@ -165,14 +238,14 @@ export default function WhatsAppConnect() {
+ 
+             // Meta sends the WABA/phone IDs as a separate postMessage event —
+             // it may arrive slightly before or after this callback fires.
+-            const session = await sessionPromise;
++            const sessionInfo = await session.promise;
+ 
+-            if (session?.cancelled) {
++            if (sessionInfo?.cancelled) {
+               setStatus('error');
+               setErrorMsg('You cancelled the WhatsApp setup before it finished. No changes were made.');
+               return;
+             }
+-            if (!session?.wabaId) {
++            if (!sessionInfo?.wabaId) {
+               setStatus('error');
+               setErrorMsg('Meta did not finish setting up your WhatsApp Business account. Please try again.');
+               return;
+@@ -181,16 +254,22 @@ export default function WhatsAppConnect() {
+             try {
+               const { data } = await api.post('/meta/embedded-signup-callback', {
+                 code,
+-                wabaId: session.wabaId,
+-                phoneNumberId: session.phoneNumberId,
++                wabaId: sessionInfo.wabaId,
++                phoneNumberId: sessionInfo.phoneNumberId,
+               });
+ 
+               if (data.step === 'pick_phone') {
+                 setPhonePicker({ key: data.key, phones: data.phones });
+                 setStatus('pick_phone');
+-              } else {
++              } else if (data.connected) {
+                 setStatus('connected');
+                 setConnectedPhone(data.phone || '');
++              } else {
++                // Saved, but Meta's activation steps (webhook subscription
++                // and/or phone registration) didn't both succeed yet — never
++                // show this as fully "Connected".
++                setStatus('activation_pending');
++                setConnectedPhone(data.phone || '');
+               }
+             } catch (err) {
+               setStatus('error');
+@@ -234,7 +313,7 @@ export default function WhatsAppConnect() {
+         key:           phonePicker.key,
+         phoneNumberId: phone.phoneNumberId,
+       });
+-      setStatus('connected');
++      setStatus(data.connected ? 'connected' : 'activation_pending');
+       setConnectedPhone(data.phone || phone.displayNumber);
+       setPhonePicker(null);
+     } catch (err) {
+@@ -277,6 +356,11 @@ export default function WhatsAppConnect() {
+         <ConnectedState phone={connectedPhone} onDisconnect={disconnect} onRecheck={checkConnection} />
+       )}
+ 
++      {/* ── ACTIVATION PENDING ────────────────────────────────────────────── */}
++      {status === 'activation_pending' && (
++        <ActivationPendingState phone={connectedPhone} onDisconnect={disconnect} onRecheck={checkConnection} />
++      )}
++
+       {/* ── PHONE PICKER ──────────────────────────────────────────────────── */}
+       {status === 'pick_phone' && phonePicker && (
+         <PhonePicker phones={phonePicker.phones} onPick={pickPhone} loading={pickLoading} />
+@@ -429,6 +513,54 @@ function ConnectedState({ phone, onDisconnect, onRecheck }) {
+   );
+ }
+ 
++// ─── Activation pending state ───────────────────────────────────────────────
++// Shown when Meta confirmed the WABA/phone but the required activation steps
++// (webhook subscription and/or Cloud API phone registration) didn't both
++// succeed — never shown as "Connected" until they do.
++function ActivationPendingState({ phone, onDisconnect, onRecheck }) {
++  return (
++    <div className="space-y-4">
++      <div className="bg-white rounded-2xl border border-amber-200 shadow-sm p-6">
++        <div className="flex items-start justify-between gap-4">
++          <div className="flex items-center gap-3">
++            <div className="w-11 h-11 bg-amber-100 rounded-xl flex items-center justify-center">
++              <RefreshCw size={22} className="text-amber-600" />
++            </div>
++            <div>
++              <p className="font-bold text-amber-900 text-lg">WhatsApp setup is still being completed</p>
++              {phone && <p className="text-sm text-amber-700 font-mono">{phone}</p>}
++              <p className="text-xs text-amber-600 mt-0.5">We saved your connection, but Meta hasn't finished activating it yet</p>
++            </div>
++          </div>
++          <div className="flex gap-2 flex-shrink-0">
++            <button
++              onClick={onRecheck}
++              title="Re-check connection"
++              className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
++            >
++              <RefreshCw size={16} />
++            </button>
++            <button
++              onClick={onDisconnect}
++              className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 rounded-lg transition-colors font-medium"
++            >
++              <LogOut size={14} /> Disconnect
++            </button>
++          </div>
++        </div>
++
++        <div className="mt-5 p-4 bg-amber-50 rounded-xl">
++          <p className="text-sm text-amber-800 leading-relaxed">
++            This can take a few minutes, or may need a quick check in Meta Business Manager
++            (e.g. resetting the number's two-step verification PIN). Tap the refresh icon above to check again,
++            or contact support if this doesn't resolve on its own.
++          </p>
++        </div>
++      </div>
++    </div>
++  );
++}
++
+ // ─── Phone picker (multiple numbers found) ────────────────────────────────────
+ function PhonePicker({ phones, onPick, loading }) {
+   return (
+-- 
+2.43.0
+
