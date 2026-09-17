@@ -13,6 +13,23 @@ const getBizId = (req) => {
   catch { return null; }
 };
 
+// ─── Helper: strip a request body down to an allowlist of fields ─────────────
+// Used on every update that forwards req.body to Mongoose. Passing req.body
+// straight into findOneAndUpdate() lets the CALLER set any field the schema
+// defines — including `business`, which would let one tenant reassign a
+// record it owns (the findOneAndUpdate filter only checks that the record
+// currently belongs to them) onto a completely different business, injecting
+// attacker-controlled data into another tenant's account. The filter proves
+// ownership of the record being updated; it says nothing about what the
+// update itself is allowed to change.
+const pickAllowed = (body, allowedFields) => {
+  const update = {};
+  for (const key of allowedFields) {
+    if (body?.[key] !== undefined) update[key] = body[key];
+  }
+  return update;
+};
+
 // ─── BUSINESS ────────────────────────────────────────────────────────────────
 exports.getBusiness = async (req, res) => {
   try {
@@ -91,13 +108,21 @@ exports.createProduct = async (req, res) => {
   }
 };
 
+// Deliberately excludes `business` — see pickAllowed() above. A product's
+// tenant is set once, at creation (createProduct), and must never move.
+const PRODUCT_ALLOWED_FIELDS = [
+  'name', 'description', 'price', 'currency', 'category', 'imageUrl', 'isAvailable', 'paymentLink',
+];
+
 exports.updateProduct = async (req, res) => {
   try {
     const bizId = getBizId(req);
     if (!bizId) return res.status(400).json({ success: false, message: 'No business on this account.' });
+    const update = pickAllowed(req.body, PRODUCT_ALLOWED_FIELDS);
     const product = await Product.findOneAndUpdate(
-      { _id: req.params.id, business: bizId }, req.body, { new: true }
+      { _id: req.params.id, business: bizId }, { $set: update }, { new: true, runValidators: true }
     );
+    if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
     res.json({ success: true, data: product });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -127,13 +152,22 @@ exports.getAppointments = async (req, res) => {
   }
 };
 
+// Deliberately excludes `business`, `conversation` and `reminderSent` — see
+// pickAllowed() above. Those are set by the system (webhook / cron), never
+// by a dashboard PATCH.
+const APPOINTMENT_ALLOWED_FIELDS = [
+  'customerName', 'customerPhone', 'service', 'scheduledAt', 'duration', 'status', 'notes',
+];
+
 exports.updateAppointment = async (req, res) => {
   try {
     const bizId = getBizId(req);
     if (!bizId) return res.status(400).json({ success: false, message: 'No business on this account.' });
+    const update = pickAllowed(req.body, APPOINTMENT_ALLOWED_FIELDS);
     const appointment = await Appointment.findOneAndUpdate(
-      { _id: req.params.id, business: bizId }, req.body, { new: true }
+      { _id: req.params.id, business: bizId }, { $set: update }, { new: true, runValidators: true }
     );
+    if (!appointment) return res.status(404).json({ success: false, message: 'Appointment not found' });
     res.json({ success: true, data: appointment });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });

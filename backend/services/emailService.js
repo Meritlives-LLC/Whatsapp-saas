@@ -1,5 +1,6 @@
 const nodemailer = require('nodemailer');
 const logger = require('../config/logger');
+const { escapeHtml } = require('../utils/htmlEscape');
 
 // Create transporter
 const createTransporter = () => {
@@ -95,16 +96,18 @@ const sendEmail = async ({ to, subject, html }) => {
  * Welcome email after registration
  */
 exports.sendWelcomeEmail = async (user, businessName) => {
+  const safeName = escapeHtml(user.name);
+  const safeBiz  = escapeHtml(businessName);
   await sendEmail({
     to: user.email,
     subject: `Welcome to WA AutoBot, ${user.name}! 🎉`,
     html: wrap(`
-      <h2>Welcome aboard, ${user.name}! 👋</h2>
-      <p>Your account for <strong>${businessName}</strong> has been created successfully. You're on the <strong>Free plan</strong> — 100 AI replies per month to get you started.</p>
+      <h2>Welcome aboard, ${safeName}! 👋</h2>
+      <p>Your account for <strong>${safeBiz}</strong> has been created successfully. You're on the <strong>Free plan</strong> — 100 AI replies per month to get you started.</p>
 
       <div class="info-box">
-        <div class="info-row"><span class="info-label">Business</span><span class="info-value">${businessName}</span></div>
-        <div class="info-row"><span class="info-label">Email</span><span class="info-value">${user.email}</span></div>
+        <div class="info-row"><span class="info-label">Business</span><span class="info-value">${safeBiz}</span></div>
+        <div class="info-row"><span class="info-label">Email</span><span class="info-value">${escapeHtml(user.email)}</span></div>
         <div class="info-row"><span class="info-label">Plan</span><span class="info-value">Free (100 AI replies/month)</span></div>
       </div>
 
@@ -134,7 +137,7 @@ exports.sendPasswordResetEmail = async (user, resetToken) => {
     subject: 'Reset your WA AutoBot password',
     html: wrap(`
       <h2>Password Reset Request</h2>
-      <p>Hi ${user.name}, we received a request to reset your password.</p>
+      <p>Hi ${escapeHtml(user.name)}, we received a request to reset your password.</p>
       <p>Click the button below to set a new password. This link expires in <strong>15 minutes</strong>.</p>
 
       <a href="${resetUrl}" class="btn">Reset Password →</a>
@@ -164,7 +167,7 @@ exports.sendUpgradeEmail = async (user, plan, amount) => {
     subject: `You're now on the ${plan.charAt(0).toUpperCase() + plan.slice(1)} plan! 🚀`,
     html: wrap(`
       <h2>Upgrade Successful! 🎉</h2>
-      <p>Hi ${user.name}, your payment was confirmed and your account has been upgraded.</p>
+      <p>Hi ${escapeHtml(user.name)}, your payment was confirmed and your account has been upgraded.</p>
 
       <div class="info-box">
         <div class="info-row"><span class="info-label">New Plan</span><span class="info-value" style="text-transform:capitalize;">${plan}</span></div>
@@ -187,7 +190,7 @@ exports.sendCancellationEmail = async (user, plan, periodEnd) => {
     subject: 'Your WA AutoBot subscription has been cancelled',
     html: wrap(`
       <h2>Subscription Cancelled</h2>
-      <p>Hi ${user.name}, your <strong>${plan}</strong> subscription has been cancelled.</p>
+      <p>Hi ${escapeHtml(user.name)}, your <strong>${escapeHtml(plan)}</strong> subscription has been cancelled.</p>
 
       <div class="info-box">
         <div class="info-row"><span class="info-label">Access Until</span><span class="info-value">${new Date(periodEnd).toLocaleDateString('en-NG', { day:'numeric', month:'long', year:'numeric' })}</span></div>
@@ -211,7 +214,7 @@ exports.sendPaymentFailedEmail = async (user, plan) => {
     subject: '⚠️ Payment failed — action required',
     html: wrap(`
       <h2>Payment Failed</h2>
-      <p>Hi ${user.name}, we couldn't process your payment for the <strong>${plan}</strong> plan.</p>
+      <p>Hi ${escapeHtml(user.name)}, we couldn't process your payment for the <strong>${escapeHtml(plan)}</strong> plan.</p>
 
       <p>Your account has been marked as past-due. Please update your payment method to avoid losing access to your AI automation.</p>
 
@@ -232,7 +235,7 @@ exports.sendLimitWarningEmail = async (user, used, limit) => {
     subject: '⚡ You\'re running low on AI replies',
     html: wrap(`
       <h2>AI Reply Limit Warning</h2>
-      <p>Hi ${user.name}, you've used <strong>${used}</strong> of your <strong>${limit}</strong> monthly AI replies.</p>
+      <p>Hi ${escapeHtml(user.name)}, you've used <strong>${used}</strong> of your <strong>${limit}</strong> monthly AI replies.</p>
       <p>When you hit 100%, AI replies will pause and customers will receive a fallback message.</p>
 
       <a href="${process.env.FRONTEND_URL}/subscription" class="btn">Upgrade Now →</a>
@@ -246,17 +249,19 @@ exports.sendLimitWarningEmail = async (user, used, limit) => {
  * Payment receipt email
  */
 exports.sendPaymentReceiptEmail = async (customer, amount, reference, businessName) => {
+  const safeCustomerName = escapeHtml(customer.name || 'there');
+  const safeBiz = escapeHtml(businessName);
   await sendEmail({
     to: customer.email,
     subject: `Payment confirmed — ₦${amount.toLocaleString()} receipt`,
     html: wrap(`
       <h2>Payment Confirmed ✅</h2>
-      <p>Hi ${customer.name || 'there'}, your payment to <strong>${businessName}</strong> was successful.</p>
+      <p>Hi ${safeCustomerName}, your payment to <strong>${safeBiz}</strong> was successful.</p>
 
       <div class="info-box">
         <div class="info-row"><span class="info-label">Amount</span><span class="info-value">₦${amount.toLocaleString()}</span></div>
-        <div class="info-row"><span class="info-label">Reference</span><span class="info-value" style="font-family:monospace;font-size:12px">${reference}</span></div>
-        <div class="info-row"><span class="info-label">Business</span><span class="info-value">${businessName}</span></div>
+        <div class="info-row"><span class="info-label">Reference</span><span class="info-value" style="font-family:monospace;font-size:12px">${escapeHtml(reference)}</span></div>
+        <div class="info-row"><span class="info-label">Business</span><span class="info-value">${safeBiz}</span></div>
         <div class="info-row"><span class="info-label">Date</span><span class="info-value">${new Date().toLocaleDateString('en-NG', { day:'numeric', month:'long', year:'numeric' })}</span></div>
       </div>
 

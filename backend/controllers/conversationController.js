@@ -71,12 +71,15 @@ exports.sendManualReply = async (req, res) => {
 
 exports.updateStatus = async (req, res) => {
   try {
+    const bizId = req.user?.business?._id;
+    if (!bizId) return res.status(400).json({ success: false, message: 'No business on this account.' });
     const { status } = req.body;
     const conversation = await Conversation.findOneAndUpdate(
-      { _id: req.params.id, business: req.user.business._id },
-      { status },
-      { new: true }
+      { _id: req.params.id, business: bizId },
+      { $set: { status } },
+      { new: true, runValidators: true }
     );
+    if (!conversation) return res.status(404).json({ success: false, message: 'Conversation not found' });
     res.json({ success: true, data: conversation });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });

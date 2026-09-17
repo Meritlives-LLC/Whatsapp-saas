@@ -9,6 +9,7 @@ const emailService = require('./emailService');
 const User = require('../models/User');
 const { getPlan } = require('../config/plans');
 const logger = require('../config/logger');
+const { escapeHtml } = require('../utils/htmlEscape');
 
 // ─── Auto follow-up (every hour) ─────────────────────────────────────────────
 const setupFollowUpCron = () => {
@@ -120,7 +121,7 @@ const setupSubscriptionCron = () => {
           await emailService.sendEmail({
             to: owner.email,
             subject: 'Your WA AutoBot subscription has ended',
-            html: `<p>Hi ${owner.name},</p><p>Your subscription has ended and you've been moved to the Free plan (${freePlan.limits.aiRepliesPerMonth} AI replies/month). <a href="${process.env.FRONTEND_URL}/subscription">Resubscribe anytime</a>.</p>`,
+            html: `<p>Hi ${escapeHtml(owner.name)},</p><p>Your subscription has ended and you've been moved to the Free plan (${freePlan.limits.aiRepliesPerMonth} AI replies/month). <a href="${process.env.FRONTEND_URL}/subscription">Resubscribe anytime</a>.</p>`,
           }).catch(() => {});
         }
         logger.info(`Subscription expired & downgraded: ${sub.business?.name}`);

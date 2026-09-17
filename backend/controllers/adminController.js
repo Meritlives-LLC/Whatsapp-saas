@@ -6,6 +6,12 @@ const { Transaction } = require('../models/index');
 const { getPlan, PLANS } = require('../config/plans');
 const bcrypt = require('bcryptjs');
 
+// Escapes regex metacharacters in user-supplied search text before it's
+// used inside a $regex filter — an unescaped value (e.g. `(a+)+$`) let an
+// admin-search request pin the event loop with a catastrophic-backtracking
+// pattern.
+const escapeRegex = (str) => String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
 // ─── PLATFORM OVERVIEW ───────────────────────────────────────────────────────
 
 exports.getStats = async (req, res) => {
@@ -90,9 +96,10 @@ exports.getBusinesses = async (req, res) => {
     // Build user filter
     const userFilter = { role: 'business' };
     if (search) {
+      const safeSearch = escapeRegex(search);
       userFilter.$or = [
-        { name: { $regex: search, $options: 'i' } },
-        { email: { $regex: search, $options: 'i' } },
+        { name: { $regex: safeSearch, $options: 'i' } },
+        { email: { $regex: safeSearch, $options: 'i' } },
       ];
     }
     if (status === 'suspended') userFilter.isActive = false;

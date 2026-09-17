@@ -236,8 +236,17 @@ exports.resetPassword = async (req, res) => {
 exports.changePassword = async (req, res) => {
   try {
     const { currentPassword, newPassword } = req.body;
-    if (!newPassword || newPassword.length < 6) {
-      return res.status(400).json({ success: false, message: 'New password must be at least 6 characters.' });
+    // Same policy as register/resetPassword — this endpoint previously
+    // accepted a weaker 6-char, no-complexity password, which the schema's
+    // minlength: 8 would then reject with a confusing 500 instead of a
+    // clear 400, and which — had minlength been lower — would have let a
+    // logged-in user quietly downgrade their own account to a much weaker
+    // password than signup allows.
+    if (!newPassword || newPassword.length < 8) {
+      return res.status(400).json({ success: false, message: 'New password must be at least 8 characters' });
+    }
+    if (!/(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/.test(newPassword)) {
+      return res.status(400).json({ success: false, message: 'New password must contain uppercase, lowercase and a number' });
     }
 
     const user = await User.findById(req.user._id).select('+password');

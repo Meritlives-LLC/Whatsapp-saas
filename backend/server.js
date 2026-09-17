@@ -63,6 +63,7 @@ const {
   webhookLimiter,
 } = require('./middlewares/security');
 const verifyMetaSignature = require('./middlewares/verifyMetaSignature');
+const { socketAuth } = require('./middlewares/socketAuth');
 const xss = require('xss-clean');
 
 // Ensure logs directory exists
@@ -87,9 +88,25 @@ const io = new Server(server, {
   pingTimeout: 60000,
 });
 
+// ── AUTH GATE ──────────────────────────────────────────────
+// Every socket must present the same JWT used for REST auth before the
+// connection is accepted. socketAuth() resolves the caller's OWN
+// business id server-side (socket.data.businessId) — a client can never
+// supply or influence which business's room it lands in.
+io.use(socketAuth());
+
 io.on('connection', (socket) => {
-  logger.info(`Socket connected: ${socket.id}`);
-  socket.on('join_business', (businessId) => socket.join(`business_${businessId}`));
+  logger.info(`Socket connected: ${socket.id} (business ${socket.data.businessId || 'none'})`);
+
+  // Join only the caller's own room, resolved from their verified JWT —
+  // never from anything the client sends. There is deliberately no
+  // client-facing 'join_business' event anymore; the old version took a
+  // businessId straight from the client and joined that room unchecked,
+  // letting any socket eavesdrop on any tenant's live conversations.
+  if (socket.data.businessId) {
+    socket.join(`business_${socket.data.businessId}`);
+  }
+
   socket.on('disconnect', (reason) => logger.info(`Socket disconnected: ${socket.id} — ${reason}`));
 });
 

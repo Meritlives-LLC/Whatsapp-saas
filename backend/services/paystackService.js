@@ -58,6 +58,8 @@ const verifyPayment = async (reference) => {
 };
 
 const validateWebhookSignature = (rawBody, signature) => {
+  if (!signature || typeof signature !== 'string') return false;
+
   const body = typeof rawBody === 'object' && !Buffer.isBuffer(rawBody)
     ? JSON.stringify(rawBody)
     : rawBody;
@@ -65,7 +67,14 @@ const validateWebhookSignature = (rawBody, signature) => {
     .createHmac('sha512', process.env.PAYSTACK_SECRET_KEY)
     .update(body)
     .digest('hex');
-  return hash === signature;
+
+  // Timing-safe comparison — a plain `===` leaks how many leading
+  // characters matched via response-time differences. Same pattern as
+  // verifyMetaSignature.js for the Meta webhook.
+  const hashBuf = Buffer.from(hash, 'utf8');
+  const sigBuf  = Buffer.from(signature, 'utf8');
+  if (hashBuf.length !== sigBuf.length) return false;
+  return crypto.timingSafeEqual(hashBuf, sigBuf);
 };
 
 const generateReference = (prefix = 'WA') =>
