@@ -8,6 +8,15 @@ import api from '../utils/api';
 const META_APP_ID    = import.meta.env.VITE_META_APP_ID   || '';
 const META_CONFIG_ID = import.meta.env.VITE_META_CONFIG_ID || '';
 
+// The classic /dialog/oauth redirect (Path B, below) is NOT the intended
+// customer-facing flow for production — it sends customers to a bare
+// Facebook Login dialog instead of the guided Embedded Signup UI, and
+// requires manual phone/WABA discovery afterward. It's kept only for local
+// development or an internal/legacy path, and must be explicitly opted into
+// — production must never silently fall back to it just because Embedded
+// Signup wasn't configured or the Facebook JS SDK failed to load.
+const ALLOW_CLASSIC_OAUTH_FALLBACK = import.meta.env.VITE_ALLOW_CLASSIC_OAUTH_FALLBACK === 'true';
+
 // ─── Facebook JS SDK loader ───────────────────────────────────────────────────
 function loadFbSdk(appId) {
   return new Promise((resolve) => {
@@ -29,34 +38,12 @@ function loadFbSdk(appId) {
   });
 }
 
-// ─── Trusted origins for Embedded Signup's postMessage event ──────────────────
-// Meta's own sample code checks `event.origin.endsWith('facebook.com')`, but
-// that's an exact-suffix bug, not a domain check: 'https://evilfacebook.com'
-// also ends with 'facebook.com' and would pass it. We instead require an
-// exact match against the real origins Meta's Embedded Signup posts from.
-// If a legitimate session event is ever seen from a facebook.com subdomain
-// not in this list, add it here explicitly — never widen this back to a
-// suffix/substring check.
-const TRUSTED_SIGNUP_ORIGINS = new Set([
-  'https://www.facebook.com',
-  'https://web.facebook.com',
-  'https://m.facebook.com',
-]);
-
-function isTrustedSignupOrigin(origin) {
-  return typeof origin === 'string' && TRUSTED_SIGNUP_ORIGINS.has(origin);
-}
-
-// Validates that a parsed WA_EMBEDDED_SIGNUP message has the shape we expect
-// before any of its fields are trusted.
-function isValidSignupMessage(data) {
-  return (
-    !!data &&
-    typeof data === 'object' &&
-    data.type === 'WA_EMBEDDED_SIGNUP' &&
-    typeof data.event === 'string'
-  );
-}
+// ─── Trusted origins / message validation for Embedded Signup ─────────────────
+// Origin allowlisting and message-shape validation live in a pure module so
+// they can be unit-tested — see utils/embeddedSignupMessage.js and
+// utils/__tests__/embeddedSignupMessage.test.js. Never widen the origin check
+// to a suffix/substring match.
+import { interpretSignupMessage } from '../utils/embeddedSignupMessage';
 
 // ─── Embedded Signup session-info listener ────────────────────────────────────
 // FB.login()'s own callback only ever gives us resp.authResponse.code — it
@@ -99,22 +86,13 @@ function createEmbeddedSignupSession() {
   }
 
   function handler(event) {
-    if (!isTrustedSignupOrigin(event.origin)) return;
-
-    let data;
-    try { data = JSON.parse(event.data); } catch { return; }
-    if (!isValidSignupMessage(data)) return;
-
-    if (data.event === 'CANCEL') {
-      settle({ cancelled: true });
-      return;
-    }
-    if (data.event.startsWith('FINISH')) {
-      settle({ wabaId: data.data?.waba_id || null, phoneNumberId: data.data?.phone_number_id || null });
-      return;
-    }
-    // ERROR or an event we don't recognize yet — not necessarily final,
-    // keep listening rather than guessing.
+    // All origin / shape / lifecycle validation happens in
+    // interpretSignupMessage — anything untrusted or unrecognised returns
+    // null and is ignored. The IDs it returns are CANDIDATES ONLY; the
+    // backend independently validates them against the exchanged token.
+    const result = interpretSignupMessage(event);
+    if (!result) return;
+    settle(result);
   }
 
   window.addEventListener('message', handler);
@@ -160,11 +138,12 @@ export default function WhatsAppConnect() {
     if (p.toString()) window.history.replaceState({}, '', window.location.pathname);
 
     const ERR_MAP = {
-      denied:           'You cancelled the Facebook login. No changes were made.',
-      no_phone_numbers: 'No WhatsApp Business numbers found on your Facebook account. Make sure you have a WhatsApp Business Account set up.',
-      token_exchange:   `Meta returned an error: ${p.get('detail') || 'unknown'}. Please try again.`,
-      invalid_state:    'Security check failed. Please try again.',
-      invalid_callback: 'Something went wrong with the Facebook redirect. Please try again.',
+      denied:            'You cancelled the Facebook login. No changes were made.',
+      no_phone_numbers:  'No WhatsApp Business numbers found on your Facebook account. Make sure you have a WhatsApp Business Account set up.',
+      connection_failed: `Meta returned an error: ${p.get('detail') || 'unknown'}. Please try again.`,
+      token_exchange:    `Meta returned an error: ${p.get('detail') || 'unknown'}. Please try again.`,
+      invalid_state:     'Security check failed. Please try again.',
+      invalid_callback:  'Something went wrong with the Facebook redirect. Please try again.',
     };
 
     if (p.get('error')) {
@@ -218,8 +197,9 @@ export default function WhatsAppConnect() {
   const connect = async () => {
     setStatus('connecting');
 
-    // Path A — Embedded Signup popup (primary path)
-    if (META_APP_ID && META_CONFIG_ID) {
+    const embeddedSignupConfigured = !!(META_APP_ID && META_CONFIG_ID);
+
+    if (embeddedSignupConfigured) {
       try {
         const FB = await loadFbSdk(META_APP_ID);
         const session = createEmbeddedSignupSession();
@@ -288,11 +268,32 @@ export default function WhatsAppConnect() {
         );
         return;
       } catch {
-        // FB SDK failed to load — fall through to redirect path
+        // The Facebook JS SDK failed to load. In production this is a
+        // configuration/connectivity problem to surface directly — never
+        // silently switch the customer onto the legacy OAuth architecture.
+        if (!ALLOW_CLASSIC_OAUTH_FALLBACK) {
+          setStatus('error');
+          setErrorMsg("We could not load Meta's WhatsApp setup tool. Please refresh the page and try again, or contact support if this keeps happening.");
+          return;
+        }
+        // else: explicitly opted into the legacy path below (dev/legacy only)
       }
+    } else if (!ALLOW_CLASSIC_OAUTH_FALLBACK) {
+      // Embedded Signup isn't configured on this deployment at all — this is
+      // a setup problem, not something the customer can work around, and
+      // must never silently send them into manual technical-ID entry.
+      setStatus('error');
+      setErrorMsg('WhatsApp connection is not configured correctly. Please contact support.');
+      return;
     }
 
-    // Path B — Standard OAuth redirect (fallback / no config_id)
+    // ── Path B — legacy/dev-only classic OAuth redirect ──────────────────
+    // Reached only when VITE_ALLOW_CLASSIC_OAUTH_FALLBACK=true is explicitly
+    // set. This is NOT the customer-facing production path: it sends the
+    // customer to a bare Facebook Login dialog instead of the guided
+    // Embedded Signup UI. It exists for local development or an internal/
+    // legacy flow only — production customers must always go through the
+    // Embedded Signup path above.
     try {
       const { data } = await api.get('/meta/oauth-url');
       window.location.href = data.url;

@@ -75,19 +75,11 @@ const app    = express();
 const server = http.createServer(app);
 
 // ─── Allowed origins ────────────────────────────────────────
-const allowedOrigins = [
-  process.env.FRONTEND_URL,
-  'http://localhost:3000',
-  'http://localhost:5173',
-].filter(Boolean);
-
-const isAllowedOrigin = (origin) => {
-  if (!origin) return true;
-  if (allowedOrigins.includes(origin)) return true;
-  // Allow any Vercel preview deployment
-  if (/\.vercel\.app$/.test(origin)) return true;
-  return false;
-};
+// See config/corsOrigins.js for the trust rules (production trusts only
+// FRONTEND_URL + ADDITIONAL_ALLOWED_ORIGINS; *.vercel.app previews are
+// never auto-trusted in production).
+const { makeIsAllowedOrigin } = require('./config/corsOrigins');
+const isAllowedOrigin = makeIsAllowedOrigin(process.env);
 
 // ─── Socket.io ──────────────────────────────────────────────
 const io = new Server(server, {

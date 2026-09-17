@@ -65,28 +65,74 @@ const publicPhone = ({ phoneNumberId, displayNumber, verifiedName, wabaId, wabaN
 // ── Shared post-signup finalization ────────────────────────────────────────
 // Performs the Meta operations that must happen after a customer completes
 // signup, before their number can actually send/receive messages:
-//   1. Subscribe this app to the customer's WABA (required for webhooks).
-//   2. Register the phone number for Cloud API with a generated 2FA PIN
+//   1. Confirm the phone resource itself is reachable with the exchanged
+//      token (VALIDATION GATE — see below).
+//   2. Subscribe this app to the customer's WABA (required for webhooks).
+//   3. Register the phone number for Cloud API with a generated 2FA PIN
 //      (required — a freshly-signed-up number cannot send/receive until
-//      this succeeds). Per Meta's Embedded Signup docs, the integrating
-//      app — not Embedded Signup itself — is responsible for performing
-//      both of these steps server-to-server after the code exchange.
-// Then saves everything against the SaaS user's Business record.
+//      this succeeds). VERIFIED against Meta's official docs
+//      (developers.facebook.com/documentation/business-messaging/whatsapp/
+//      business-phone-numbers/registration, and .../solution-providers/
+//      manage-phone-numbers — "After a client successfully completes the
+//      Embedded Signup flow ... you must register the number for Cloud API
+//      use"). Per Meta's official Manage Webhooks doc, the integrating app
+//      — not Embedded Signup itself — is responsible for performing both
+//      (2) and (3) server-to-server after the code exchange.
 //
-// IMPORTANT: neither (1) nor (2) failing blocks saving the WABA/phone IDs
-// and token — they're still valid and the customer is still the verified
-// owner, and saving them lets a retry reuse the same connection rather than
-// starting over. But this must NEVER be reported to the customer as a full
+// (1) is a hard gate: if Meta cannot confirm the phone resource with this
+// token, nothing is saved and finalizeConnection() throws — this must never
+// silently continue with empty phone details (a business record with no
+// verified phone identity is not a valid connection).
+//
+// (2) and (3) failing does NOT block saving the WABA/phone IDs and token —
+// they're still valid and the customer is still the verified owner, and
+// saving them lets a retry reuse the same connection rather than starting
+// over. But this must NEVER be reported to the customer as a full
 // "connected" state: connectionStatus reflects the real, verifiable outcome
 // (see Business.js), and callers (embeddedSignupCallback / oauthCallback /
 // selectPhone) must relay that status rather than assuming success.
 async function finalizeConnection({ userId, wabaId, phoneNumberId, accessToken }) {
-  const details = await metaGraph
-    .getPhoneNumberDetails(phoneNumberId, accessToken)
-    .catch((err) => {
-      logger.warn(`Could not fetch phone details for ${phoneNumberId}: ${err.response?.data?.error?.message || err.message}`);
-      return {};
-    });
+  // ── VALIDATION GATE: the phone resource must be confirmed with the
+  // exchanged token before anything is persisted. This is deliberately not
+  // caught-and-ignored — a failure here means we cannot prove the token
+  // actually has access to this phone number, so the connection must not be
+  // saved as valid at all (P0 requirement: phone details lookup is a
+  // validation gate, not optional display info).
+  let details;
+  try {
+    details = await metaGraph.getPhoneNumberDetails(phoneNumberId, accessToken);
+  } catch (err) {
+    const message = err.response?.data?.error?.message || err.message;
+    logger.error(`Phone validation failed for ${phoneNumberId} (user ${userId}): ${message}`);
+    const validationError = new Error(`Could not validate the selected WhatsApp number with Meta: ${message}`);
+    validationError.code = 'PHONE_VALIDATION_FAILED';
+    throw validationError;
+  }
+  if (!details?.displayNumber) {
+    // Meta responded without throwing but didn't return a usable phone
+    // identity — treat this the same as a hard failure rather than saving a
+    // record with blank phone details.
+    logger.error(`Phone validation returned no display number for ${phoneNumberId} (user ${userId})`);
+    const validationError = new Error('Meta did not return a valid phone number for this connection.');
+    validationError.code = 'PHONE_VALIDATION_FAILED';
+    throw validationError;
+  }
+
+  // ── Application-level tenant-isolation check ──────────────────────────
+  // Belt-and-suspenders alongside the DB-level partial unique index on
+  // whatsappPhoneNumberId (see config/indexes.js): catch a cross-tenant
+  // collision here with a clear, specific error message, rather than
+  // relying solely on a raw duplicate-key exception from MongoDB.
+  const conflictingBusiness = await Business.findOne({
+    whatsappPhoneNumberId: phoneNumberId,
+    owner: { $ne: userId },
+  });
+  if (conflictingBusiness) {
+    logger.error(`Phone ${phoneNumberId} is already connected to a different business (attempted by user ${userId})`);
+    const conflictError = new Error('This WhatsApp number is already connected to a different account. Disconnect it there first, or contact support.');
+    conflictError.code = 'PHONE_ALREADY_CLAIMED';
+    throw conflictError;
+  }
 
   const subscribeResult = await metaGraph.subscribeAppToWaba(wabaId, accessToken);
 
@@ -108,7 +154,22 @@ async function finalizeConnection({ userId, wabaId, phoneNumberId, accessToken }
     update.whatsappRegistrationPin = pin;
   }
 
-  const business = await Business.findOneAndUpdate({ owner: userId }, update, { new: true });
+  // Safety net for a race between the check above and this write (two
+  // concurrent requests claiming the same number at once): the DB-level
+  // partial unique index on whatsappPhoneNumberId (config/indexes.js) is
+  // the actual enforcement point and will reject the loser with E11000.
+  let business;
+  try {
+    business = await Business.findOneAndUpdate({ owner: userId }, update, { new: true });
+  } catch (err) {
+    if (err?.code === 11000) {
+      logger.error(`Duplicate-key race on whatsappPhoneNumberId ${phoneNumberId} for user ${userId}`);
+      const conflictError = new Error('This WhatsApp number is already connected to a different account. Disconnect it there first, or contact support.');
+      conflictError.code = 'PHONE_ALREADY_CLAIMED';
+      throw conflictError;
+    }
+    throw err;
+  }
 
   const warnings = [];
   if (!subscribeResult.subscribed) {
@@ -174,27 +235,64 @@ exports.embeddedSignupCallback = async (req, res) => {
     const shortLivedToken = await metaGraph.exchangeEmbeddedCodeForToken(code);
     const longLivedToken = await metaGraph.getLongLivedToken(shortLivedToken);
 
-    let targetPhoneNumberId = phoneNumberId;
+    // ── P0: server-side authorization check ─────────────────────────────
+    // The browser's WA_EMBEDDED_SIGNUP message is only a hint about which
+    // WABA/phone the customer picked in the popup — it is NOT authoritative.
+    // We now ask Meta, using the token we just exchanged, which phone
+    // numbers are actually reachable under the submitted wabaId. This one
+    // call does double duty without inventing any new endpoint:
+    //   - If the token has no access to wabaId at all, Meta rejects this
+    //     request (permission error), closing the "unauthorized WABA" gap.
+    //   - The response is the authoritative phone list under that WABA,
+    //     which the submitted phoneNumberId is checked against below,
+    //     closing the "unauthorized/mismatched phone" gap.
+    let authorizedPhones;
+    try {
+      authorizedPhones = await metaGraph.getPhoneNumbersForWaba(wabaId, longLivedToken);
+    } catch (err) {
+      const metaError = err.response?.data?.error?.message || err.message;
+      logger.warn(`Embedded Signup: token cannot access WABA ${wabaId} for user ${req.user._id}: ${metaError}`);
+      return res.status(400).json({
+        success: false,
+        message: 'We could not verify that this WhatsApp Business Account is authorized for your Meta login. Please try again.',
+      });
+    }
 
-    if (!targetPhoneNumberId) {
+    if (authorizedPhones.length === 0) {
+      return res.status(400).json({ success: false, message: 'No eligible WhatsApp phone numbers were found on this account.' });
+    }
+
+    let targetPhone;
+    if (phoneNumberId) {
+      // The browser suggested a specific number — it must be one Meta
+      // actually confirms belongs to this WABA/token. A mismatch (wrong ID,
+      // stale data, or a tampered/replayed request) is rejected outright
+      // rather than trusted.
+      targetPhone = authorizedPhones.find((p) => p.phoneNumberId === phoneNumberId);
+      if (!targetPhone) {
+        logger.warn(`Embedded Signup: submitted phoneNumberId ${phoneNumberId} not found under WABA ${wabaId} for user ${req.user._id}`);
+        return res.status(400).json({
+          success: false,
+          message: 'The selected WhatsApp number could not be verified against your Meta account. Please try again.',
+        });
+      }
+    } else if (authorizedPhones.length === 1) {
       // Bypass-phone-selection configurations (featureType: only_waba_sharing)
-      // return only a waba_id from the message event — look up its numbers.
-      const phones = await metaGraph.getPhoneNumbersForWaba(wabaId, longLivedToken);
-
-      if (phones.length === 0) {
-        return res.status(400).json({ success: false, message: 'No eligible WhatsApp phone numbers were found on this account.' });
-      }
-      if (phones.length > 1) {
-        const key = stashPending({ userId: req.user._id, token: longLivedToken, phones });
-        return res.json({ success: true, step: 'pick_phone', key, phones: phones.map(publicPhone) });
-      }
-      targetPhoneNumberId = phones[0].phoneNumberId;
+      // return only a waba_id from the message event — safe to auto-select
+      // when there's exactly one authorized number.
+      targetPhone = authorizedPhones[0];
+    } else {
+      // Multiple eligible numbers and none pre-selected — let the customer
+      // pick, but only from the server-verified list (never the raw
+      // browser-supplied value).
+      const key = stashPending({ userId: req.user._id, token: longLivedToken, phones: authorizedPhones });
+      return res.json({ success: true, step: 'pick_phone', key, phones: authorizedPhones.map(publicPhone) });
     }
 
     const { business, displayNumber, warnings, connected, connectionStatus } = await finalizeConnection({
       userId: req.user._id,
       wabaId,
-      phoneNumberId: targetPhoneNumberId,
+      phoneNumberId: targetPhone.phoneNumberId,
       accessToken: longLivedToken,
     });
 
@@ -202,7 +300,7 @@ exports.embeddedSignupCallback = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Business not found for this account.' });
     }
 
-    logger.info(`WhatsApp ${connected ? 'connected' : 'saved (activation pending)'} via Embedded Signup for user ${req.user._id}: waba=${wabaId} phone=${targetPhoneNumberId}`);
+    logger.info(`WhatsApp ${connected ? 'connected' : 'saved (activation pending)'} via Embedded Signup for user ${req.user._id}: waba=${wabaId} phone=${targetPhone.phoneNumberId}`);
     // `success: true` only means the request itself completed without error —
     // `connected` / `connectionStatus` carry the real, verified outcome. Never
     // collapse these into a single "connected" flag the frontend can't tell
@@ -323,7 +421,9 @@ exports.oauthCallback = async (req, res) => {
   } catch (err) {
     const metaError = err.response?.data?.error?.message || err.message;
     logger.error(`Meta OAuth callback error: ${metaError}`);
-    return res.redirect(`${FRONTEND_URL}/connect-whatsapp?error=token_exchange&detail=${encodeURIComponent(metaError)}`);
+    // Covers token exchange, phone-validation-gate, and duplicate-phone
+    // rejections alike — the human-readable reason travels in `detail`.
+    return res.redirect(`${FRONTEND_URL}/connect-whatsapp?error=connection_failed&detail=${encodeURIComponent(metaError)}`);
   }
 };
 
