@@ -77,8 +77,14 @@ const validateWebhookSignature = (rawBody, signature) => {
   return crypto.timingSafeEqual(hashBuf, sigBuf);
 };
 
+// Math.random() is not cryptographically secure, and prefixing with
+// Date.now() narrowed the effective search space to whatever time window an
+// attacker could estimate — a reference only needs to be guessed once to be
+// usable against /subscription/verify or /payments endpoints. crypto's
+// CSPRNG removes that; 16 random bytes (128 bits) as hex makes brute-forcing
+// infeasible regardless of timing knowledge.
 const generateReference = (prefix = 'WA') =>
-  `${prefix}-${Date.now()}-${Math.random().toString(36).substr(2, 6).toUpperCase()}`;
+  `${prefix}-${Date.now()}-${crypto.randomBytes(16).toString('hex').toUpperCase()}`;
 
 // ── BANK TRANSFER ─────────────────────────────────────────────────────────────
 

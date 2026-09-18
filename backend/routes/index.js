@@ -86,15 +86,18 @@ router.get('/auth/google',          googleAuth);
 router.get('/auth/google/callback', googleCallback);
 
 // ── ADMIN ─────────────────────────────────────────────────────────────────────
-router.get('/admin/stats',                    protect, adminOnly, adminCtrl.getStats);
-router.get('/admin/activity',                 protect, adminOnly, adminCtrl.getActivity);
-router.get('/admin/revenue',                  protect, adminOnly, adminCtrl.getRevenue);
-router.get('/admin/businesses',               protect, adminOnly, adminCtrl.getBusinesses);
-router.get('/admin/businesses/:id',           protect, adminOnly, adminCtrl.getBusiness);
-router.patch('/admin/businesses/:id/suspend', protect, adminOnly, adminCtrl.toggleSuspend);
-router.delete('/admin/businesses/:id',        protect, adminOnly, adminCtrl.deleteUser);
-router.patch('/admin/businesses/:id/plan',    protect, adminOnly, adminCtrl.overridePlan);
-router.patch('/admin/businesses/:id/credits', protect, adminOnly, adminCtrl.addAiCredits);
-router.post('/admin/create-admin',            protect, adminOnly, adminCtrl.createAdmin);
+// checkActive added: previously an admin account flipped to isActive=false
+// (e.g. an ex-employee's account, disabled instead of deleted) could still
+// hit every admin endpoint, because only adminOnly was checked here.
+router.get('/admin/stats',                    protect, checkActive, adminOnly, adminCtrl.getStats);
+router.get('/admin/activity',                 protect, checkActive, adminOnly, adminCtrl.getActivity);
+router.get('/admin/revenue',                  protect, checkActive, adminOnly, adminCtrl.getRevenue);
+router.get('/admin/businesses',               protect, checkActive, adminOnly, adminCtrl.getBusinesses);
+router.get('/admin/businesses/:id',           protect, checkActive, adminOnly, adminCtrl.getBusiness);
+router.patch('/admin/businesses/:id/suspend', protect, checkActive, adminOnly, adminCtrl.toggleSuspend);
+router.delete('/admin/businesses/:id',        protect, checkActive, adminOnly, adminCtrl.deleteUser);
+router.patch('/admin/businesses/:id/plan',    protect, checkActive, adminOnly, adminCtrl.overridePlan);
+router.patch('/admin/businesses/:id/credits', protect, checkActive, adminOnly, adminCtrl.addAiCredits);
+router.post('/admin/create-admin',            protect, checkActive, adminOnly, adminCtrl.createAdmin);
 
 module.exports = router;

@@ -7,11 +7,17 @@ const Business = require('../models/Business');
 const emailService = require('../services/emailService');
 const logger = require('../config/logger');
 
-const signAccessToken = (id) =>
-  jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: process.env.JWT_EXPIRES_IN || '7d' });
+// Default access-token lifetime is intentionally short (15 minutes), not 7
+// days. The whole point of the refresh-token-rotation model below is that a
+// leaked access token (it lives in the browser, readable by any script —
+// see frontend/src/utils/api.js) stops being useful quickly; JWT_EXPIRES_IN
+// can override this, but must never be set to something close to the
+// refresh token's 7-day lifetime or the split stops doing anything.
+const signAccessToken = (id, tokenVersion = 0) =>
+  jwt.sign({ id, ver: tokenVersion }, process.env.JWT_SECRET, { expiresIn: process.env.JWT_EXPIRES_IN || '15m' });
 
-const signRefreshToken = (id) =>
-  jwt.sign({ id }, process.env.JWT_REFRESH_SECRET, { expiresIn: '7d' });
+const signRefreshToken = (id, tokenVersion = 0) =>
+  jwt.sign({ id, ver: tokenVersion }, process.env.JWT_REFRESH_SECRET, { expiresIn: '7d' });
 
 const setRefreshCookie = (res, token) => {
   res.cookie('refreshToken', token, {
@@ -66,8 +72,8 @@ exports.googleCallback = [
     })(req, res, next);
   },
   (req, res) => {
-    const accessToken  = signAccessToken(req.user._id);
-    const refreshToken = signRefreshToken(req.user._id);
+    const accessToken  = signAccessToken(req.user._id, req.user.tokenVersion);
+    const refreshToken = signRefreshToken(req.user._id, req.user.tokenVersion);
     setRefreshCookie(res, refreshToken);
     res.redirect(`${process.env.FRONTEND_URL}/auth/google/success?token=${accessToken}`);
   },
@@ -92,8 +98,8 @@ exports.register = async (req, res) => {
     user.business  = business._id;
     await user.save();
 
-    const accessToken  = signAccessToken(user._id);
-    const refreshToken = signRefreshToken(user._id);
+    const accessToken  = signAccessToken(user._id, user.tokenVersion);
+    const refreshToken = signRefreshToken(user._id, user.tokenVersion);
     setRefreshCookie(res, refreshToken);
     emailService.sendWelcomeEmail(user, business.name).catch(() => {});
     logger.info(`New registration: ${user.email}`);
@@ -125,8 +131,8 @@ exports.login = async (req, res) => {
     if (!user.isActive)
       return res.status(403).json({ success: false, message: 'Account suspended. Contact support.' });
 
-    const accessToken  = signAccessToken(user._id);
-    const refreshToken = signRefreshToken(user._id);
+    const accessToken  = signAccessToken(user._id, user.tokenVersion);
+    const refreshToken = signRefreshToken(user._id, user.tokenVersion);
     setRefreshCookie(res, refreshToken);
     user.lastLoginAt = new Date();
     await user.save({ validateBeforeSave: false });
@@ -151,8 +157,14 @@ exports.refreshToken = async (req, res) => {
     const user    = await User.findById(decoded.id).populate('business');
     if (!user || !user.isActive)
       return res.status(401).json({ success: false, message: 'Invalid refresh token' });
-    const newAccessToken  = signAccessToken(user._id);
-    const newRefreshToken = signRefreshToken(user._id);
+    // Reject a refresh token issued before the user's last password
+    // change/reset — tokenVersion is bumped there specifically so old
+    // tokens stop working immediately instead of riding out their
+    // remaining 7-day lifetime.
+    if ((decoded.ver || 0) !== (user.tokenVersion || 0))
+      return res.status(401).json({ success: false, message: 'Session no longer valid. Please login again.' });
+    const newAccessToken  = signAccessToken(user._id, user.tokenVersion);
+    const newRefreshToken = signRefreshToken(user._id, user.tokenVersion);
     setRefreshCookie(res, newRefreshToken);
     res.json({
       success: true, token: newAccessToken,

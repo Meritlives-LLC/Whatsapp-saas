@@ -136,6 +136,10 @@ exports.upgrade = async (req, res) => {
 exports.verifyUpgrade = async (req, res) => {
   try {
     const { reference } = req.body;
+    if (!reference) {
+      return res.status(400).json({ success: false, message: 'reference is required' });
+    }
+
     const payment = await paystackService.verifyPayment(reference);
 
     if (payment.status !== 'success') {
@@ -143,6 +147,37 @@ exports.verifyUpgrade = async (req, res) => {
     }
 
     const { businessId, planId } = payment.metadata;
+
+    // ── Ownership check ────────────────────────────────────────────────
+    // Paystack's own verify response says who this transaction's metadata
+    // claims it belongs to — but that must match the CALLER, not just be
+    // trusted at face value. Without this, any authenticated user who
+    // learns another business's successful payment reference could trigger
+    // a write against that business's subscription from their own session.
+    if (String(businessId) !== String(req.user.business._id)) {
+      logger.warn(`subscription/verify: reference ${reference} belongs to business ${businessId}, requested by ${req.user.business._id}`);
+      return res.status(403).json({ success: false, message: 'This payment reference does not belong to your account.' });
+    }
+
+    // ── Idempotency ────────────────────────────────────────────────────
+    // Paystack's verify endpoint returns status: 'success' for a paid
+    // transaction indefinitely — nothing stops the same reference being
+    // re-verified. Without this check, refreshing the post-checkout page
+    // (or calling this endpoint again) re-extends currentPeriodEnd by
+    // another 30 days per call, for a single payment. The webhook handlers
+    // already guard the same way (see paystackService.isAlreadyProcessed) —
+    // this endpoint was the one path that didn't.
+    if (paystackService.isAlreadyProcessed(`verify:${reference}`)) {
+      const existing = await Subscription.findOne({ business: businessId });
+      return res.json({
+        success: true,
+        alreadyProcessed: true,
+        data: existing
+          ? { plan: existing.plan, status: existing.status, periodEnd: existing.currentPeriodEnd }
+          : { plan: planId },
+      });
+    }
+
     const now = new Date();
 
     // Set resetAt to the 1st of next month (aligns with cron billing reset)

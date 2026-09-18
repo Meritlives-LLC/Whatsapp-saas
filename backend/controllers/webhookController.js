@@ -9,6 +9,33 @@ const logger = require('../config/logger');
 let io;
 exports.setIO = (socketIO) => { io = socketIO; };
 
+// ── Webhook idempotency (Meta delivers at-least-once) ───────────────────────
+// A slow response, a transient 5xx, or just Meta's own retry policy can
+// cause the same inbound message to be POSTed to this webhook more than
+// once. Without a dedup check, a retried delivery would: call the AI again
+// (double-billing usage via incrementAiUsage), send the customer a second
+// reply, and append duplicate rows to conversation.messages. This mirrors
+// the same pattern already used for Paystack webhooks
+// (paystackService.isAlreadyProcessed) — just keyed on the WhatsApp
+// message id instead of a payment reference.
+//
+// In-memory / per-process, same caveat as processedRefs and
+// pendingConnections elsewhere in this codebase: replace with Redis (or a
+// TTL-indexed Mongo collection) before running more than one backend
+// instance.
+const processedMessageIds = new Map();
+const MESSAGE_IDEMPOTENCY_TTL = 24 * 60 * 60 * 1000; // 24h
+function isDuplicateMessage(messageId) {
+  if (!messageId) return false; // nothing to dedupe on — let it through
+  const now = Date.now();
+  for (const [id, ts] of processedMessageIds) {
+    if (now - ts > MESSAGE_IDEMPOTENCY_TTL) processedMessageIds.delete(id);
+  }
+  if (processedMessageIds.has(messageId)) return true;
+  processedMessageIds.set(messageId, now);
+  return false;
+}
+
 const FALLBACK_REPLIES = {
   image:    `Thanks for sending that image! 📸 One of our team members will review it and get back to you shortly.`,
   audio:    `Thanks for your voice message! 🎙️ We'll listen to it and reply as soon as possible.`,
@@ -45,6 +72,14 @@ exports.receiveMessage = async (req, res) => {
     if (!parsed) return;
 
     const { phoneNumberId, from, messageId, text, customerName, type } = parsed;
+
+    // A retried delivery of a message we've already handled — skip
+    // reprocessing entirely (no AI call, no duplicate reply, no duplicate
+    // usage increment).
+    if (isDuplicateMessage(messageId)) {
+      logger.info(`Webhook duplicate delivery skipped: ${messageId}`);
+      return;
+    }
 
     // ── Non-text fallback ─────────────────────────────────────────────────────
     if (NON_TEXT_TYPES.has(type)) {

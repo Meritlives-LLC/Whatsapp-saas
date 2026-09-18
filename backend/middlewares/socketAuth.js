@@ -48,9 +48,15 @@ function socketAuth() {
       if (!token) return next(new Error('Unauthorized: no token provided'));
 
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
-      const user = await User.findById(decoded.id).select('_id business isActive');
+      const user = await User.findById(decoded.id).select('_id business isActive tokenVersion');
       if (!user) return next(new Error('Unauthorized: user not found'));
       if (!user.isActive) return next(new Error('Unauthorized: account suspended'));
+      // Same tokenVersion check as the REST `protect` middleware — a socket
+      // connecting with a token issued before a password change/reset must
+      // not be allowed to attach to the live room.
+      if ((decoded.ver || 0) !== (user.tokenVersion || 0)) {
+        return next(new Error('Unauthorized: session no longer valid'));
+      }
 
       socket.data.userId = String(user._id);
       socket.data.businessId = user.business ? String(user.business) : null;

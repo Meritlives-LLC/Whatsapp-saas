@@ -12,6 +12,12 @@ exports.protect = async (req, res, next) => {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     req.user = await User.findById(decoded.id).populate('business').select('-password');
     if (!req.user) return res.status(401).json({ success: false, message: 'User not found' });
+    // Same tokenVersion check as refreshToken() — an access token issued
+    // before a password change/reset is rejected immediately rather than
+    // riding out its remaining lifetime.
+    if ((decoded.ver || 0) !== (req.user.tokenVersion || 0)) {
+      return res.status(401).json({ success: false, message: 'Session no longer valid. Please login again.' });
+    }
     next();
   } catch (err) {
     res.status(401).json({ success: false, message: 'Token invalid' });

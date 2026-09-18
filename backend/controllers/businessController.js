@@ -68,6 +68,9 @@ exports.updateBusiness = async (req, res) => {
     const business = await Business.findByIdAndUpdate(
       bizId, { $set: update }, { new: true, runValidators: true }
     );
+    if (!business) {
+      return res.status(404).json({ success: false, message: 'Business not found' });
+    }
     res.json({ success: true, data: business });
   } catch (err) {
     logger.error(`updateBusiness: ${err.message}`);
